@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { CrawlPage, CrawledResource } from '../../types/crawl';
+import { ImagesExplorer } from './ImagesExplorer';
 
 type ResourceFilter = 'all' | 'stylesheet' | 'script' | 'image' | 'media-font' | 'loaded' | 'blocked' | 'errors';
 type SortKey = 'index' | 'type' | 'url' | 'status' | 'size' | 'source';
@@ -41,12 +42,12 @@ export function ResourcesExplorer({ pages, sharedSearch }: { pages: CrawlPage[];
     all: resources.length,
     stylesheet: resources.filter(resource => normalizeType(resource) === 'stylesheet').length,
     script: resources.filter(resource => normalizeType(resource) === 'script').length,
-    image: resources.filter(resource => normalizeType(resource) === 'image').length,
+    image: pages.reduce((total, page) => total + (page.images?.length || 0), 0),
     'media-font': resources.filter(resource => ['media', 'font'].includes(normalizeType(resource))).length,
     loaded: resources.filter(isLoaded).length,
     blocked: resources.filter(resource => resource.discoveryStatus === 'Blocked by crawler').length,
     errors: resources.filter(isError).length
-  }), [resources]);
+  }), [resources, pages]);
   const filtered = useMemo(() => {
     const query = sharedSearch.trim().toLowerCase();
     const matches = resources.filter(resource => {
@@ -85,10 +86,11 @@ export function ResourcesExplorer({ pages, sharedSearch }: { pages: CrawlPage[];
   const filters: Array<[ResourceFilter, string]> = [['all', 'All'], ['stylesheet', 'CSS'], ['script', 'JavaScript'], ['image', 'Images'], ['media-font', 'Media & fonts'], ['loaded', 'Loaded'], ['blocked', 'Blocked'], ['errors', 'Errors']];
   return <>
     <div className="sub-tabs" aria-label="Resource filters">{filters.map(([value, label]) => <button key={value} className={filter === value ? 'pill active' : 'pill'} onClick={() => changeFilter(value)}>{label} ({counts[value]})</button>)}</div>
-    <div className="table-wrap"><table><thead><tr>{header('#', 'index')}{header('Type', 'type')}{header('Resource URL', 'url')}{header('Status', 'status')}{header('Size', 'size')}{header('Source page', 'source')}<th /></tr></thead><tbody>
+    {filter === 'image' ? <ImagesExplorer pages={pages} search={sharedSearch} /> : <><div className="table-wrap"><table><thead><tr>{header('#', 'index')}{header('Type', 'type')}{header('Resource URL', 'url')}{header('Status', 'status')}{header('Size', 'size')}{header('Source page', 'source')}<th /></tr></thead><tbody>
       {rows.length ? rows.map(({ resource }, index) => { const status = resource.statusCode || resource.discoveryStatus || 'Not checked'; const isBad = isError(resource); return <tr key={`${resource.sourceUrl}|${resource.resourceType}|${resource.url}|${index}`}><td>{(currentPage - 1) * pageSize + index + 1}</td><td><span className="tag positive">{resource.resourceType || 'Other'}</span></td><td className="url" title={resource.url}><a href={resource.url} target="_blank" rel="noreferrer">{resource.url}</a></td><td><span className={isLoaded(resource) ? 'code success' : isBad ? 'code failure' : 'code neutral'}>{status}</span></td><td>{formatBytes(resource.sizeBytes)}</td><td className="url" title={resource.sourceUrl}>{resource.sourceUrl || '—'}</td><td><button className="inspect" onClick={() => setSelected(resource)}>Inspect</button></td></tr>; }) : <tr><td colSpan={7} className="empty">{resources.length ? 'No resources match the current search or filters.' : 'No embedded resources discovered yet. Run a crawl to inventory CSS, JavaScript, media, fonts, and images.'}</td></tr>}
     </tbody></table></div>
     {filtered.length > 0 && <div className="pagination"><span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length.toLocaleString()}</span><label>Rows <select value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); setPage(1); }}><option value="50">50</option><option value="100">100</option><option value="250">250</option></select></label><button className="secondary" disabled={currentPage === 1} onClick={() => setPage(current => current - 1)}>Previous</button><span>Page {currentPage} of {totalPages}</span><button className="secondary" disabled={currentPage === totalPages} onClick={() => setPage(current => current + 1)}>Next</button></div>}
+    </>}
     {selected && <ResourceInspector resource={selected} onClose={() => setSelected(null)} />}
   </>;
 }

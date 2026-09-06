@@ -1,0 +1,48 @@
+/* Image audit: wrap fields and retain every value on narrow screens. */
+.images-table-wrap { width: 100%; min-width: 0; }
+.images-table { width: 100%; min-width: 0; table-layout: fixed; }
+.images-table th, .images-table td { padding: 10px 8px; overflow-wrap: anywhere; }
+.images-table .url, .images-table .redirect-destination {
+  min-width: 0;
+  max-width: none;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.images-table .sort-button { max-width: 100%; white-space: normal; flex-wrap: wrap; text-align: left; }
+.images-table .inspect, .images-table .tag, .images-table .code { max-width: 100%; white-space: normal; }
+@media (max-width: 850px) {
+  .images-table, .images-table tbody { display: block; }
+  .images-table colgroup { display: none; }
+  .images-table thead { display: block; padding: 8px; border-bottom: 1px solid #e1e8f1; }
+  .images-table thead tr { display: flex; flex-wrap: wrap; gap: 4px; }
+  .images-table th { display: block; padding: 4px; }
+  .images-table th:last-child { display: none; }
+  .images-table tbody tr { display: block; padding: 10px; }
+  .images-table tbody tr + tr { border-top: 2px solid #e1e8f1; }
+  .images-table td[data-label] {
+    display: grid;
+    grid-template-columns: 90px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    border: 0;
+    padding: 6px 0;
+  }
+  .images-table td[data-label]::before { content: attr(data-label); font-size: .7rem; font-weight: 700; color: #64748b; white-space: normal; }
+  .images-table td > * { min-width: 0; justify-self: start; }
+  .images-table .empty { display: block; }
+}
+
+.images-table .image-column-index { width: 4%; }
+.images-table .image-column-url { width: 22%; }
+.images-table .image-column-alt { width: 15%; }
+.images-table .image-column-dimensions { width: 16%; }
+.images-table .image-column-size { width: 8%; }
+.images-table .image-column-status { width: 9%; }
+.images-table .image-column-source { width: 17%; }
+.images-table .image-column-action { width: 9%; }
+.image-audit > p { color: #64748b; font-size: .82rem; line-height: 1.5; }
+.image-inspector { overflow-wrap: anywhere; }
+.image-inspector dl > div { margin: 14px 0; }
+.image-inspector dt { font-weight: 700; color: #64748b; font-size: .8rem; }
+.image-inspector dd { margin: 5px 0; white-space: pre-wrap; }

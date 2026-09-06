@@ -1,4 +1,5 @@
 import { URL } from 'url';
+import { collectDomImages, normalizeImages } from './images.js';
 
 const CONTENT_AREA_SELECTORS = [
   '.page-text',
@@ -35,7 +36,7 @@ export class Extractor {
   static async extractPageData(page, currentUrl, baseOrigin, options = {}) {
     const customSelector = options.customSelector || '';
 
-    return await page.evaluate(({ currentUrl, baseOrigin, customSelector, contentSelectors }) => {
+    const result = await page.evaluate(({ currentUrl, baseOrigin, customSelector, contentSelectors }) => {
       const contentExclusionPattern = /nav|header|footer|sidebar|side-bar|menu|cookie|consent|modal|popup|banner|breadcrumb|toolbar|login|signup|betslip|bet-slip|winner|carousel|slider/i;
       const getMeta = (name, attr = 'name') => {
         const el = document.querySelector(`meta[${attr}="${name}"]`) || document.querySelector(`meta[property="${name}"]`);
@@ -289,6 +290,8 @@ export class Extractor {
         resources
       };
     }, { currentUrl, baseOrigin, customSelector, contentSelectors: CONTENT_AREA_SELECTORS });
+    result.images = normalizeImages(await page.evaluate(collectDomImages), currentUrl);
+    return result;
   }
 
   /**
@@ -493,6 +496,10 @@ export class Extractor {
     const bodyText = $('body').text().trim();
     const totalWords = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
     const imagesCount = $('img').length;
+    const images = normalizeImages($('img').toArray().map(element => ({
+      attributes: Object.fromEntries(['src', 'srcset', 'data-src', 'data-lazy-src', 'data-srcset', 'alt', 'width', 'height', 'loading'].map(name => [name, $(element).attr(name) ?? null])),
+      baseUrl: $('base[href]').first().attr('href') || currentUrl
+    })), currentUrl);
 
     return {
       title,
@@ -509,6 +516,7 @@ export class Extractor {
       h3List,
       totalWords,
       imagesCount,
+      images,
       fullPageText: bodyText,
       fullPageTextSnippet: bodyText.slice(0, 1000),
       customContent: {

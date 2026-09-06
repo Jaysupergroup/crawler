@@ -5,9 +5,11 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { BrowserManager } from './src/engine/browser.js';
+import { Extractor } from './src/engine/extractor.js';
+import { normalizeImages } from './src/engine/images.js';
 
 // Uses the compiled dashboard and synthetic API responses: no real crawl or DB.
-test('all Pages and Links fields fit without horizontal scrolling', { timeout: 60000 }, async (t) => {
+test('Pages, Links and Image SEO retain fields without horizontal scrolling', { timeout: 60000 }, async (t) => {
   const reservation = createServer().listen(0, '127.0.0.1');
   await once(reservation, 'listening');
   const port = reservation.address().port;
@@ -37,6 +39,22 @@ test('all Pages and Links fields fit without horizontal scrolling', { timeout: 6
   const manager = new BrowserManager();
   t.after(() => manager.close());
   const browser = await manager.init();
+  await t.test('browser extraction retains selected image, dimensions and dynamic alt text', async () => {
+    const fixture = await browser.newPage();
+    try {
+      await fixture.route('https://images.example/**', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"></svg>' }));
+      await fixture.setContent('<base href="https://images.example/"><img src="one.svg" width="60" height="30"><img src="one.svg" alt=""><picture><source srcset="two.svg 1x"><img alt="Responsive"></picture>');
+      await fixture.waitForFunction(() => [...document.images].every(img => img.naturalWidth > 0));
+      await fixture.evaluate(() => { document.images[0].setAttribute('alt', 'Added by JavaScript'); });
+      const extracted = await Extractor.extractPageData(fixture, 'https://images.example/', 'https://images.example');
+      assert.equal(extracted.images.length, 3);
+      assert.equal(extracted.images[0].alt, 'Added by JavaScript');
+      assert.equal(extracted.images[1].alt, '');
+      assert.equal(extracted.images[0].naturalWidth, 120);
+      assert.equal(extracted.images[0].renderedWidth, 60);
+      assert.equal(extracted.images[2].url, 'https://images.example/two.svg');
+    } finally { await fixture.close(); }
+  });
   const page = await browser.newPage();
   const longText = 'A complete page value with enough text to wrap across multiple lines. '.repeat(8);
   const results = ['a', 'b'].map((letter, index) => ({
@@ -55,6 +73,12 @@ test('all Pages and Links fields fit without horizontal scrolling', { timeout: 6
     ...(code === 301 ? { redirectCount: 1, finalStatusCode: 200,
       finalUrl: `https://example.com/final/${'long-final-destination-'.repeat(15)}` } : {})
   }));
+  results[0].images = normalizeImages([null, '', ' ', 'Helpful alt text', '<script>unsafe</script>'].map((alt, index) => ({
+    attributes: { alt, src: `https://images.example/${index}/${'long-image-path-'.repeat(12)}.png`, width: index ? null : '800', height: index ? null : '400' }
+  })), results[0].url);
+  results[0].images[3].sizeBytes = 250000;
+  results[0].images[3].statusCode = 200;
+  results[0].images[4].statusCode = 404;
   await page.route('**/api/crawler/snapshot?*', route => route.fulfill({ json: {
     revision: 0, isRunning: false, results, links,
     stats: { pagesCrawled: 2, endTime: 1 }, engine: { mode: 'browser' }
@@ -172,5 +196,53 @@ test('all Pages and Links fields fit without horizontal scrolling', { timeout: 6
     await page.setViewportSize({ width: 390, height: 900 });
     await page.locator('.links-table-wrap').scrollIntoViewIfNeeded();
     await page.screenshot({ path: '.tmp/links-mobile.png' });
+  }
+  await page.locator('.explorer-tab').filter({ hasText: 'Resources & assets' }).click();
+  await page.locator('.sub-tabs[aria-label="Resource filters"] button').filter({ hasText: 'Images' }).click();
+  for (const width of [1440, 860, 390, 320]) {
+    await t.test(`image SEO filters retain all fields at ${width}px`, async () => {
+      await page.setViewportSize({ width, height: 1000 });
+      const filters = page.locator('[aria-label="Image SEO filters"] button');
+      for (let index = 0; index < 9; index++) {
+        await filters.nth(index).click();
+        const state = await page.locator('.images-table-wrap').evaluate(el => ({
+          overflow: el.scrollWidth - el.clientWidth,
+          cells: el.querySelectorAll('tbody tr:first-child td').length,
+          clipped: [...el.querySelectorAll('tbody td')].some(td => td.scrollWidth > td.clientWidth + 1)
+        }));
+        assert.ok(state.overflow <= 1);
+        assert.equal(state.cells, 8);
+        assert.equal(state.clipped, false);
+      }
+    });
+  }
+  await t.test('image distinctions, search, sorting and inspection', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const filters = page.locator('[aria-label="Image SEO filters"] button');
+    await filters.nth(1).click();
+    assert.equal(await page.locator('.images-table tbody tr').count(), 1);
+    assert.match(await page.locator('.images-table td[data-label="Alt text"]').textContent(), /Missing/);
+    await filters.nth(2).click();
+    assert.match(await page.locator('.images-table td[data-label="Alt text"]').textContent(), /Empty/);
+    await filters.nth(0).click();
+    await page.locator('.images-table .sort-button').filter({ hasText: 'Size' }).click();
+    await page.locator('.images-table .sort-button').filter({ hasText: 'Size' }).click();
+    assert.match(await page.locator('.images-table td[data-label="Size"]').first().textContent(), /244.1 KB/);
+    const search = page.getByPlaceholder('Search resource URLs, types, source pages or status…');
+    await search.fill('Helpful alt');
+    assert.equal(await page.locator('.images-table tbody tr').count(), 1);
+    await page.locator('.images-table .inspect').click();
+    assert.match(await page.getByRole('dialog', { name: 'Image SEO details' }).textContent(), /Helpful alt/);
+    await page.getByRole('button', { name: 'Close image inspection' }).click();
+    await search.fill('');
+    assert.equal(await page.locator('.image-audit script').count(), 0);
+    assert.match(await page.locator('.image-audit .history-message').textContent(), /Recrawl/);
+    assert.equal(await page.locator('.image-audit img').count(), 0, 'No remote previews are requested');
+  });
+  if (process.env.LAYOUT_SCREENSHOTS === 'true') {
+    await page.locator('.image-audit').screenshot({ path: '.tmp/images-desktop.png' });
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.locator('.images-table-wrap').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '.tmp/images-mobile.png' });
   }
 });

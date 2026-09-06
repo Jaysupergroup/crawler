@@ -3,6 +3,7 @@ import { URL } from 'url';
 import * as cheerio from 'cheerio';
 import { BrowserManager } from './browser.js';
 import { Extractor } from './extractor.js';
+import { enrichImages } from './images.js';
 import { RobotsParser } from './robots.js';
 import { LinkStatusChecker } from './statusChecker.js';
 import { GEO_PRESETS, detectRegionFromUrl } from './geoPresets.js';
@@ -802,6 +803,7 @@ export class SiteCrawler extends EventEmitter {
       crawlResult.customContent = extracted.customContent;
       crawlResult.links = extracted.links;
       crawlResult.resources = this.mergeResources(extracted.resources, observedResources);
+      crawlResult.images = enrichImages(extracted.images, [...observedResources.values()]);
 
       if (extracted.customContent && extracted.customContent.detected) {
         this.stats.customDetectedCount++;

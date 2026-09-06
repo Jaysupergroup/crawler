@@ -108,6 +108,28 @@ export interface HtmlComparisonCapture {
   comparison: RenderComparison;
 }
 
+export interface CrawledImage {
+  elementIndex: number;
+  url: string;
+  rawSrc: string;
+  currentSrc: string;
+  srcset: string;
+  lazySrc: string;
+  alt: string | null;
+  widthAttribute: string | null;
+  heightAttribute: string | null;
+  declaredWidth: number | null;
+  declaredHeight: number | null;
+  naturalWidth: number | null;
+  naturalHeight: number | null;
+  renderedWidth: number | null;
+  renderedHeight: number | null;
+  loading: string;
+  statusCode: number | null;
+  sizeBytes: number | null;
+  discoveryStatus: string;
+}
+
 export interface CrawlPage {
   url: string;
   statusCode?: number | null;
@@ -124,6 +146,7 @@ export interface CrawlPage {
   wordCount?: number;
   totalWords?: number;
   imagesCount?: number | null;
+  images?: CrawledImage[] | null;
   internalLinksCount?: number;
   externalLinksCount?: number;
   customLinksCount?: number;

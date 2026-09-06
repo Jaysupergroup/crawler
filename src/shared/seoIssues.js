@@ -34,7 +34,9 @@ export function getSeoIssues(results = [], allLinks = []) {
     ['missing-canonical', 'Opportunity', 'Missing canonical', 'No canonical URL was found.'],
     ['canonical-mismatch', 'Warning', 'Canonical points elsewhere', 'The canonical URL differs from the crawled page.'],
     ['noindex', 'Opportunity', 'Noindex directive', 'The page asks search engines not to index it.'],
-    ['thin-content', 'Opportunity', 'Thin content', 'The page has fewer than 300 extracted words.']
+    ['thin-content', 'Opportunity', 'Thin content', 'The page has fewer than 300 extracted words.'],
+    ['image-missing-alt', 'Warning', 'Image missing alt attribute', 'Review images without an alt attribute. Empty alt text is handled separately, not automatically treated as an error.'],
+    ['image-large', 'Opportunity', 'Image over 200 KB', 'An observed image response exceeds the 200 KB review threshold; this is not a universal SEO limit.']
   ];
   /** @type {Map<string, IssueGroup>} */
   const groups = new Map(definitions.map(([code, severity, label, description]) => [code, { code, severity, label, description, items: [] }]));
@@ -50,6 +52,11 @@ export function getSeoIssues(results = [], allLinks = []) {
   for (const page of results) {
     if ((page.statusCode || 0) >= 400 || page.error) add('page-error', page, page.error || `Returned HTTP ${page.statusCode}.`);
     if (page.statusCode !== 200) continue;
+    for (const image of page.images || []) {
+      const detail = `Image #${image.elementIndex}: ${image.url || image.rawSrc || '(no resolved URL)'}`;
+      if (image.alt === null) add('image-missing-alt', page, detail);
+      if (image.sizeBytes != null && image.sizeBytes > 200 * 1024) add('image-large', page, `${detail} — ${image.sizeBytes} bytes.`);
+    }
 
     const title = (page.title || '').trim();
     if (!title) add('missing-title', page, 'No title tag was extracted.');

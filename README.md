@@ -81,6 +81,10 @@ The client build is committed for the current deployment workflow. Commit agreed
 
 ## Operating notes
 
+Image SEO auditing is available at **Resources & assets → Images**. It records each img occurrence’s alt attribute, declared/natural/rendered dimensions and available response size. Missing and empty alt are separate, image details are saved for new crawls, and exports include Images CSV and an Image SEO worksheet. No extra image downloads are made. Older history requires recrawling for image details.
+
+The additive `crawl_pages.images_json` column is created automatically on database initialization. Run `npm run test:images` for extraction, report and mocked persistence checks; `npm run test:layout` also covers browser image extraction and all image filters on mobile/desktop. Actual MySQL migration should be checked in the configured deployment environment.
+
 - Single URL starts with one page and depth zero; multi-page scopes normally use 50 pages and depth three.
 - “No page limit” still obeys depth, scope and the default 50,000-page server safety ceiling.
 - The default capacity is three simultaneous crawls with one asynchronous page worker each.

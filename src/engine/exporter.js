@@ -1,6 +1,15 @@
 import ExcelJS from 'exceljs';
 import { getSeoIssues, comparableUrl, getExactContentCandidate } from '../shared/seoIssues.js';
 
+const IMAGE_COLUMNS = [
+  ['Source Page', 'sourceUrl'], ['Image Occurrence', 'elementIndex'], ['Image URL', 'url'],
+  ['Alt State', 'altState'], ['Alt Text', 'alt'], ['Declared Width', 'declaredWidth'], ['Declared Height', 'declaredHeight'],
+  ['Natural Width', 'naturalWidth'], ['Natural Height', 'naturalHeight'], ['Rendered Width', 'renderedWidth'], ['Rendered Height', 'renderedHeight'],
+  ['Size (bytes)', 'sizeBytes'], ['HTTP Status', 'statusCode'], ['Discovery', 'discoveryStatus'],
+  ['Raw src', 'rawSrc'], ['Selected currentSrc', 'currentSrc'], ['Lazy Source', 'lazySrc'], ['Srcset', 'srcset'],
+  ['Width Attribute', 'widthAttribute'], ['Height Attribute', 'heightAttribute'], ['Loading', 'loading']
+];
+
 export class Exporter {
   static escapeCSV(field) {
     if (field === null || field === undefined) return '""';
@@ -238,6 +247,14 @@ export class Exporter {
     const resourcesSheet = workbook.addWorksheet('Resources & Assets', {
       views: [{ state: 'frozen', ySplit: 1 }]
     });
+    const imagesSheet = workbook.addWorksheet('Image SEO', { views: [{ state: 'frozen', ySplit: 1 }] });
+    imagesSheet.columns = IMAGE_COLUMNS.map(([header, key]) => ({ header, key, width: ['url', 'sourceUrl', 'alt', 'srcset'].includes(key) ? 55 : 22 }));
+    imagesSheet.getRow(1).font = { bold: true };
+    imagesSheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: IMAGE_COLUMNS.length } };
+    this.getImages(results).forEach(image => {
+      const row = imagesSheet.addRow(image);
+      row.alignment = { vertical: 'top', wrapText: true };
+    });
     resourcesSheet.columns = [
       { header: '#', key: 'id', width: 6 },
       { header: 'Type', key: 'resourceType', width: 16 },
@@ -458,6 +475,21 @@ export class Exporter {
       this.escapeCSV(resource.sourceUrl)
     ]);
     return [headers.join(','), ...rows.map(row => row.join(','))].join('\r\n');
+  }
+
+  static getImages(results = []) {
+    return results.flatMap(page => (page.images || []).map(image => ({
+      ...image, sourceUrl: page.url,
+      altState: image.alt === null ? 'Missing attribute' : image.alt === '' ? 'Empty' : !image.alt?.trim() ? 'Whitespace only' : 'Present'
+    })));
+  }
+
+  static generateImagesCSV(results = []) {
+    const safeCell = value => this.escapeCSV(typeof value === 'string' && /^[\s]*[=+@-]/.test(value) ? "'" + value : value);
+    return [
+      IMAGE_COLUMNS.map(([header]) => this.escapeCSV(header)).join(','),
+      ...this.getImages(results).map(image => IMAGE_COLUMNS.map(([, key]) => safeCell(image[key])).join(','))
+    ].join('\r\n');
   }
 
   /** Export detected SEO issues as a standalone CSV report. */

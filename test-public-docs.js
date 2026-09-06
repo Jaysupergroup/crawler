@@ -81,7 +81,7 @@ test('public documentation is readable without exposing private application rout
   });
 
   await t.test('crawler data, exports and admin data remain unauthorized', async () => {
-    for (const path of ['/api/crawler/history', '/api/crawler/results', '/api/export/pages.csv', '/api/admin/database-overview']) {
+    for (const path of ['/api/crawler/history', '/api/crawler/results', '/api/export/pages.csv', '/api/export/images.csv', '/api/admin/database-overview']) {
       const response = await get(path);
       assert.equal(response.status, 401, path);
       assert.match(response.headers.get('x-robots-tag'), /noindex/);
