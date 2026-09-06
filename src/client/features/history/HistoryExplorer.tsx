@@ -5,7 +5,7 @@ import type { CrawlHistoryRecord } from '../../types/crawl';
 function date(value?: string | null) { return value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—'; }
 function pages(record: CrawlHistoryRecord) { return record.stats?.pagesCrawled || 0; }
 
-export function HistoryExplorer({ onRestore }: { onRestore: (crawlId: string) => Promise<void> }) {
+export function HistoryExplorer({ onRestore }: { onRestore: (record: CrawlHistoryRecord) => Promise<void> }) {
   const [records, setRecords] = useState<CrawlHistoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<string | null>(null);
@@ -27,7 +27,7 @@ export function HistoryExplorer({ onRestore }: { onRestore: (crawlId: string) =>
     if (restoring) return;
     setRestoring(record.id); setMessage(null);
     try {
-      await onRestore(record.id);
+      await onRestore(record);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not restore this saved crawl.');
       setRestoring(null);

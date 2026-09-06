@@ -1,13 +1,11 @@
 import { useMemo, useState } from 'react';
-import type { CrawlPage, CrawledLink } from '../../types/crawl';
-import { getSeoIssues, type SeoIssue, type Severity } from './issueRules';
+import { type SeoIssue, type Severity } from './issueRules';
 
 function severityClass(severity: Severity) { return `severity ${severity.toLowerCase()}`; }
 
 type IssueGroup = { code: string; issue: SeoIssue; count: number };
 
-export function IssuesExplorer({ pages, links, sharedSearch, onInspectPage }: { pages: CrawlPage[]; links: CrawledLink[]; sharedSearch: string; onInspectPage: (url: string) => void }) {
-  const issues = useMemo(() => getSeoIssues(pages, links), [pages, links]);
+export function IssuesExplorer({ issues, sharedSearch, onInspectPage }: { issues: SeoIssue[]; sharedSearch: string; onInspectPage: (url: string) => void }) {
   const [activeCode, setActiveCode] = useState('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
