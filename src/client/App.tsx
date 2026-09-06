@@ -115,7 +115,7 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [explorerView, setExplorerView] = useState<'pages' | 'links' | 'resources' | 'issues' | 'content' | 'history'>('pages');
   const [completionNotice, setCompletionNotice] = useState<string | null>(null);
-  const [restoringAudit, setRestoringAudit] = useState<{ pageCount: number } | null>(null);
+  const [restoringAudit, setRestoringAudit] = useState<{ pageCount: number; expectedPages: number | null; stage: 'restoring' | 'rendering' } | null>(null);
   const completionNotificationEligible = useRef(false);
   const notifiedCompletion = useRef<number | null>(null);
   const running = crawler.state === 'running' || crawler.state === 'paused' || crawler.state === 'stopping';
@@ -143,6 +143,12 @@ export default function App() {
     const timeout = window.setTimeout(() => setCompletionNotice(null), 12000);
     return () => window.clearTimeout(timeout);
   }, [completionNotice]);
+  useEffect(() => {
+    if (!restoringAudit || restoringAudit.stage !== 'rendering' || restoringAudit.expectedPages === null || crawler.pages.length < restoringAudit.expectedPages) return;
+    let active = true;
+    void afterNextPaint().then(() => { if (active) setRestoringAudit(null); });
+    return () => { active = false; };
+  }, [crawler.pages.length, restoringAudit]);
   const contentPages = crawler.pages.filter(contentFound).length;
   const resourceCount = useMemo(() => crawler.pages.reduce((count, page) => count + (page.resources?.length || 0), 0), [crawler.pages]);
   // Exact-duplicate analysis normalises every extracted page text. Defer that
@@ -224,11 +230,11 @@ export default function App() {
         ].map(([label, path]) => <a key={path} href={crawlerClient.exportUrl(path)}>{label}</a>)}</div>}</div></div>
         <nav className="explorer-tabs" aria-label="Dashboard data views"><button className={explorerView === 'pages' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('pages')}>Pages <span>{crawler.pages.length}</span></button><button className={explorerView === 'links' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('links')}>Discovered links & anchors <span>{crawler.links.length}</span></button><button className={explorerView === 'resources' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('resources')}>Resources & assets <span>{resourceCount}</span></button><button className={explorerView === 'issues' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('issues')}>SEO issues <span>{explorerView === 'issues' ? issueCount : '…'}</span></button><button className={explorerView === 'content' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('content')}>Extracted content</button><button className={explorerView === 'history' ? 'explorer-tab active' : 'explorer-tab'} onClick={() => setExplorerView('history')}>History</button></nav>
         {explorerView !== 'history' && explorerView !== 'pages' && <div className="toolbar"><input value={search} onChange={event => setSearch(event.target.value)} placeholder={explorerView === 'links' ? 'Search anchor text, URLs or status codes…' : explorerView === 'resources' ? 'Search resource URLs, types, source pages or status…' : explorerView === 'issues' ? 'Search issue names, URLs, details or severity…' : 'Search URLs, titles, or extracted text…'} /></div>}
-        {explorerView === 'pages' ? <PagesExplorer pages={crawler.pages} onInspectPage={(page, section) => { setSelectedPageTab(section); setSelectedPage(page); }} /> : explorerView === 'links' ? <LinksExplorer links={crawler.links} sharedSearch={search} /> : explorerView === 'resources' ? <ResourcesExplorer pages={crawler.pages} sharedSearch={search} /> : explorerView === 'issues' ? <IssuesExplorer issues={seoIssues} sharedSearch={search} onInspectPage={url => { const target = crawler.pages.find(page => page.url === url); if (target) { setSelectedPageTab('overview'); setSelectedPage(target); } }} /> : explorerView === 'content' ? <ContentExplorer pages={crawler.pages} sharedSearch={search} /> : <HistoryExplorer onRestore={async (record: CrawlHistoryRecord) => { setRestoringAudit({ pageCount: record.stats?.pagesCrawled || 0 }); try { const restored = await crawler.restoreHistory(record.id); setConfig(current => ({ ...current, ...(restored.crawl.config || {}), seedUrl: restored.crawl.seedUrl })); setExplorerView('pages'); await afterNextPaint(); } finally { setRestoringAudit(null); } }} />}
+        {explorerView === 'pages' ? <PagesExplorer pages={crawler.pages} onInspectPage={(page, section) => { setSelectedPageTab(section); setSelectedPage(page); }} /> : explorerView === 'links' ? <LinksExplorer links={crawler.links} sharedSearch={search} /> : explorerView === 'resources' ? <ResourcesExplorer pages={crawler.pages} sharedSearch={search} /> : explorerView === 'issues' ? <IssuesExplorer issues={seoIssues} sharedSearch={search} onInspectPage={url => { const target = crawler.pages.find(page => page.url === url); if (target) { setSelectedPageTab('overview'); setSelectedPage(target); } }} /> : explorerView === 'content' ? <ContentExplorer pages={crawler.pages} sharedSearch={search} /> : <HistoryExplorer onRestore={async (record: CrawlHistoryRecord) => { setRestoringAudit({ pageCount: record.stats?.pagesCrawled || 0, expectedPages: null, stage: 'restoring' }); try { const restored = await crawler.restoreHistory(record.id); setConfig(current => ({ ...current, ...(restored.crawl.config || {}), seedUrl: restored.crawl.seedUrl })); setExplorerView('pages'); setRestoringAudit({ pageCount: restored.restoredPages, expectedPages: restored.restoredPages, stage: 'rendering' }); } catch (error) { setRestoringAudit(null); throw error; } }} />}
       </section>
     </main>
     {completionNotice && <div className="completion-notice" role="status"><strong>✓ Crawl finished</strong><span>{completionNotice}</span><button className="icon-button" onClick={() => setCompletionNotice(null)} aria-label="Dismiss crawl completion notification">×</button></div>}
-    {restoringAudit && <div className="audit-restore-overlay" role="status" aria-live="polite"><div><span className="loading-spinner" aria-hidden="true" /><strong>Preparing your audit for display</strong><p>{restoringAudit.pageCount.toLocaleString()} pages have been restored. Rendering the dashboard now…</p></div></div>}
+    {restoringAudit && <div className="audit-restore-overlay" role="status" aria-live="polite"><div><span className="loading-spinner" aria-hidden="true" /><strong>{restoringAudit.stage === 'restoring' ? 'Loading saved audit' : 'Preparing your audit for display'}</strong><p>{restoringAudit.stage === 'restoring' ? `Retrieving ${restoringAudit.pageCount.toLocaleString()} pages and their audit data…` : `${restoringAudit.pageCount.toLocaleString()} pages are ready. Rendering the dashboard now…`}</p></div></div>}
     {selectedPage && <PageInspector page={selectedPage} initialTab={selectedPageTab} onClose={() => setSelectedPage(null)} />}
   </div>;
 }
