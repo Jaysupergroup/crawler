@@ -116,6 +116,7 @@ export default function App() {
   const [explorerView, setExplorerView] = useState<'pages' | 'links' | 'resources' | 'issues' | 'content' | 'history'>('pages');
   const [completionNotice, setCompletionNotice] = useState<string | null>(null);
   const [restoringAudit, setRestoringAudit] = useState<{ pageCount: number; expectedPages: number | null; stage: 'restoring' | 'rendering' } | null>(null);
+  const [commandPending, setCommandPending] = useState<'start' | 'pause' | 'resume' | 'stop' | 'reset' | null>(null);
   const completionNotificationEligible = useRef(false);
   const notifiedCompletion = useRef<number | null>(null);
   const running = crawler.state === 'running' || crawler.state === 'paused' || crawler.state === 'stopping';
@@ -186,7 +187,14 @@ export default function App() {
     if ((config.noPageLimit || config.maxPages >= 50) && 'Notification' in window && window.Notification.permission === 'default') {
       void window.Notification.requestPermission();
     }
-    await crawler.run('start', config);
+    setCommandPending('start');
+    try { await crawler.run('start', config); }
+    finally { setCommandPending(null); }
+  }
+  async function runCommand(action: 'pause' | 'resume' | 'stop' | 'reset') {
+    setCommandPending(action);
+    try { await crawler.run(action); }
+    finally { setCommandPending(null); }
   }
 
   return <div className="app-shell">
@@ -213,7 +221,7 @@ export default function App() {
             <label className="check"><input type="checkbox" checked={config.blockCrossDomainRedirects} disabled={running} onChange={event => update('blockCrossDomainRedirects', event.target.checked)} /> Lock target domain (block geo redirects)</label>
             <label className="check"><input type="checkbox" checked={config.respectRobotsTxt} disabled={running} onChange={event => update('respectRobotsTxt', event.target.checked)} /> Enforce robots.txt</label>
           </div>}
-          <div className="actions"><button className="primary" type={primaryAction.action === 'start' ? 'submit' : 'button'} disabled={crawler.state === 'stopping'} onClick={primaryAction.action === 'start' ? undefined : () => void crawler.run(primaryAction.action)}>{primaryAction.label}</button><button className="danger" type="button" disabled={!running || crawler.state === 'stopping'} onClick={() => { completionNotificationEligible.current = false; void crawler.run('stop'); }}>■ Abort</button><button className="secondary" type="button" onClick={() => { completionNotificationEligible.current = false; void crawler.run('reset'); }}>↻ Clear / reset</button></div>
+          <div className="actions"><button className="primary" type={primaryAction.action === 'start' ? 'submit' : 'button'} disabled={crawler.state === 'stopping' || Boolean(commandPending)} onClick={primaryAction.action === 'start' ? undefined : () => void runCommand(primaryAction.action)}>{commandPending === 'start' ? 'Starting…' : commandPending === 'pause' ? 'Pausing…' : commandPending === 'resume' ? 'Resuming…' : primaryAction.label}</button><button className="danger" type="button" disabled={!running || crawler.state === 'stopping' || Boolean(commandPending)} onClick={() => { completionNotificationEligible.current = false; void runCommand('stop'); }}>{commandPending === 'stop' ? '■ Stopping…' : '■ Abort'}</button><button className="secondary" type="button" disabled={Boolean(commandPending)} onClick={() => { completionNotificationEligible.current = false; void runCommand('reset'); }}>{commandPending === 'reset' ? '↻ Clearing…' : '↻ Clear / reset'}</button></div>
         </form>
         {crawler.error && <p className="error-message" role="alert">{crawler.error}</p>}
       </section>
