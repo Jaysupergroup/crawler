@@ -164,6 +164,18 @@ test('failed snapshot is retried even when the stream is healthy', async () => {
   h.live.stop();
 });
 
+test('a malformed snapshot cannot publish missing page or link lists', async () => {
+  const h = harness();
+  h.live.start();
+  await flush();
+  h.streams[0].emit('open');
+  h.reads[0].resolve({ revision: 1, isRunning: false, stats: null });
+  await flush();
+  assert.deepEqual(h.live.getSnapshot().pages, []);
+  assert.deepEqual(h.live.getSnapshot().links, []);
+  h.live.stop();
+});
+
 test('revocation closes the stream, clears data and stops fallback requests', async () => {
   const h = harness();
   await connected(h, snapshot(1, [{ url: 'https://example.com/' }]));

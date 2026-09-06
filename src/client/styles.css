@@ -32,3 +32,6 @@ main { max-width: 1540px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 44px) 4
 .topbar .docs-link { color: #dae4ff; font-size: .8rem; text-underline-offset: 3px; }
 .topbar .docs-link:hover { color: #fff; }
 .topbar .docs-link:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
+.app-recovery { max-width: 640px; margin: 72px auto; padding: 32px; }
+.app-recovery h1 { margin: 0; color: #18233b; font-size: 1.35rem; }
+.app-recovery p:not(.eyebrow) { color: #52637d; line-height: 1.55; }

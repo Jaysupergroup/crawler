@@ -3,6 +3,9 @@ import type { CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLin
 // The browser retains only a server-issued opaque ID. The API verifies that ID
 // belongs to the currently signed-in administrator before serving crawl data.
 const SESSION_KEY = 'crawlloom-dashboard-session';
+// Saved multi-thousand-page audits are much larger than routine live updates.
+// Give their one-off restore enough time on a cloud-hosted connection.
+const SNAPSHOT_TIMEOUT_MS = 120000;
 let dashboardSessionId: string | null = sessionStorage.getItem(SESSION_KEY);
 let sessionPromise: Promise<string> | null = null;
 
@@ -57,15 +60,27 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     redirectToLogin();
     throw new Error('Your CrawlLoom session has expired. Please sign in again.');
   }
-  const body = await response.json().catch(() => ({ error: 'The server returned an invalid response.' }));
-  if (!response.ok) throw new Error(body.error || 'Crawler request failed.');
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    // A truncated JSON body must not be treated as a valid snapshot. That
+    // previously allowed missing `results` into React and caused a white page.
+    throw new Error('The server returned an incomplete response. Please retry opening this audit.');
+  }
+  if (!response.ok) {
+    const message = typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
+      ? body.error
+      : 'Crawler request failed.';
+    throw new Error(message);
+  }
   return body as T;
 }
 
 export const crawlerClient = {
   ready: () => ensureDashboardSession(),
   snapshot: (signal?: AbortSignal) => request<CrawlerSnapshot>('/api/crawler/snapshot', {
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)]) : AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)
   }),
   status: () => request<CrawlerStatus>('/api/crawler/status'),
   results: () => request<{ results: CrawlPage[] }>('/api/crawler/results'),

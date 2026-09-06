@@ -39,6 +39,10 @@ type LiveEvent = {
   message?: string;
 } & EngineStatus;
 
+function safeList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
 function deriveState(data: LiveEvent): CrawlState {
   return data.isRunning ? (data.isStopping ? 'stopping' : data.isPaused ? 'paused' : 'running') : data.stats ? 'completed' : 'ready';
 }
@@ -160,7 +164,7 @@ export class LiveCrawler {
       this.revision = snapshot.revision;
       this.needsSnapshot = false;
       this.update({ state: deriveState(snapshot), stats: snapshot.stats || emptyStats(), queueLength: snapshot.queueLength || 0,
-        pages: snapshot.results, links: snapshot.links, engine: snapshot.engine || null, capacity: snapshot.capacity });
+        pages: safeList<CrawlPage>(snapshot.results), links: safeList<CrawledLink>(snapshot.links), engine: snapshot.engine || null, capacity: snapshot.capacity });
     }).catch(error => {
       if (this.active && generation === this.generation && !controller.signal.aborted) {
         this.update({ error: error instanceof Error ? error.message : 'Could not refresh crawl results.' });
