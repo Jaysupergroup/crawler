@@ -16,6 +16,7 @@ body { margin: 0; background: var(--surface-subtle); color: var(--ink); line-hei
 .header-inner { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .brand { color: var(--ink); font-size: 1.1rem; font-weight: 750; text-decoration: none; letter-spacing: -.02em; }
 .brand span { color: var(--primary); }
+.header-actions { display: flex; flex-wrap: wrap; gap: 16px; }
 .back-link, .site-nav a { color: var(--secondary); font-size: .9rem; text-decoration: none; }
 .back-link:hover, .site-nav a:hover { color: var(--primary); text-decoration: underline; }
 main { padding: 62px 0; }

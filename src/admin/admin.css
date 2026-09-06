@@ -2,6 +2,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: #10172a; }
 header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px max(24px, calc((100vw - 980px) / 2)); border-bottom: 1px solid #2e406a; background: #151f38; }
+.admin-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }.admin-nav a { padding: 8px 10px; color: #c9dcff; font-size: .88rem; font-weight: 650; text-decoration: none; }.admin-nav a:hover { color: #fff; text-decoration: underline; }
 h1 { margin: 0; font-size: 1.35rem; }
 main { width: min(100% - 48px, 1080px); margin: 46px auto; display: grid; gap: 24px; }
 .panel { padding: 30px; border: 1px solid #5d3442; border-radius: 14px; background: #211827; }
@@ -46,6 +47,7 @@ tr:last-child td { border-bottom: 0; }
 #overviewMessage, #sessionsMessage, #eventsMessage { min-height: 24px; color: #b9c8df; }
 
 @media (max-width: 700px) {
+  header { align-items: flex-start; flex-direction: column; }
   main { width: min(100% - 28px, 1080px); margin: 22px auto; }
   .panel { padding: 20px; }
   .metrics { grid-template-columns: repeat(2, 1fr); }

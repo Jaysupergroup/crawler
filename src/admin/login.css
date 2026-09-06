@@ -27,6 +27,7 @@ main {
 
 h1 { margin: 0 0 8px; font-size: 1.55rem; }
 p { margin: 0 0 26px; color: #aebcd8; line-height: 1.55; }
+.login-navigation { margin: -10px 0 22px; font-size: .88rem; }.login-navigation a { color: #b8d0ff; text-decoration: none; }.login-navigation a:hover { color: #fff; text-decoration: underline; }
 label { display: block; margin-bottom: 8px; color: #cdd9f0; font-size: .9rem; font-weight: 600; }
 input { width: 100%; padding: 13px; border: 1px solid #4b5e8e; border-radius: 8px; background: #0e1830; color: #fff; font: inherit; }
 input:focus { outline: 2px solid #7da4ff; outline-offset: 2px; }
