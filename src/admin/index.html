@@ -56,8 +56,9 @@
     <section class="panel overview">
       <div class="section-head"><h2>Security activity</h2><button id="refreshEvents" class="secondary" type="button">Refresh</button></div>
       <p id="eventsMessage" role="status">Loading recent security activity…</p>
-      <p class="muted">The 10 most recent security events are shown here. Passwords, cookies, and other credentials are never recorded.</p>
+      <p class="muted">Security activity is shown 10 events at a time. Passwords, cookies, and other credentials are never recorded.</p>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Outcome</th><th>IP</th><th>Device</th><th>Details</th></tr></thead><tbody id="eventsTable"><tr><td colspan="6" class="muted">Loading security activity…</td></tr></tbody></table></div>
+      <div class="event-pagination"><span id="eventsPageInfo" class="muted">Loading page…</span><div><button id="previousEvents" class="secondary" type="button" disabled>Previous</button><button id="nextEvents" class="secondary" type="button" disabled>Next</button></div></div>
     </section>
     <section class="panel">
       <h2>Clear saved crawl history</h2>

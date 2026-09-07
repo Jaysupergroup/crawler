@@ -10,6 +10,9 @@ const sessionsTable = document.getElementById('sessionsTable');
 const refreshEvents = document.getElementById('refreshEvents');
 const eventsMessage = document.getElementById('eventsMessage');
 const eventsTable = document.getElementById('eventsTable');
+const previousEvents = document.getElementById('previousEvents');
+const nextEvents = document.getElementById('nextEvents');
+const eventsPageInfo = document.getElementById('eventsPageInfo');
 const createAuditorForm = document.getElementById('createAuditorForm');
 const auditorUsername = document.getElementById('auditorUsername');
 const auditorPassword = document.getElementById('auditorPassword');
@@ -89,17 +92,27 @@ const formatEventDetails = metadata => {
     .join(' • ');
 };
 
-async function loadSecurityEvents() {
+let securityEventsPage = 1;
+async function loadSecurityEvents(page = securityEventsPage) {
+  const requestedPage = Math.max(1, Number(page) || 1);
   refreshEvents.disabled = true;
+  previousEvents.disabled = true;
+  nextEvents.disabled = true;
   eventsMessage.textContent = 'Loading recent security activity…';
   try {
-    const response = await fetch('/api/admin/security-events', { cache: 'no-store' });
+    const response = await fetch(`/api/admin/security-events?page=${encodeURIComponent(requestedPage)}`, { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Could not load security activity.');
+    const pagination = data.pagination || { page: requestedPage, pageSize: 10, total: data.events.length, totalPages: 1 };
+    securityEventsPage = pagination.page;
     eventsTable.innerHTML = data.events.map(event => `<tr><td>${escapeHtml(formatDate(event.createdAt))}</td><td><span class="event-name">${escapeHtml(formatEventName(event.eventType))}</span></td><td><span class="event-outcome ${escapeHtml(String(event.outcome || 'unknown').toLowerCase())}">${escapeHtml(event.outcome || 'Unknown')}</span></td><td>${escapeHtml(event.ipAddress)}</td><td>${escapeHtml(describeDevice(event.userAgent))}</td><td><span class="event-details">${escapeHtml(formatEventDetails(event.metadata))}</span></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No security events have been recorded yet.</td></tr>';
-    eventsMessage.textContent = `${data.events.length} recent event${data.events.length === 1 ? '' : 's'} loaded.`;
+    eventsMessage.textContent = `${data.events.length} event${data.events.length === 1 ? '' : 's'} loaded.`;
+    eventsPageInfo.textContent = pagination.total ? `Showing ${(pagination.page - 1) * pagination.pageSize + 1}–${Math.min(pagination.page * pagination.pageSize, pagination.total)} of ${pagination.total.toLocaleString()} events` : 'No security events recorded';
+    previousEvents.disabled = pagination.page <= 1;
+    nextEvents.disabled = pagination.page >= pagination.totalPages;
   } catch (error) {
     eventsMessage.textContent = error.message;
+    eventsPageInfo.textContent = 'Could not load pagination.';
   } finally {
     refreshEvents.disabled = false;
   }
@@ -143,7 +156,9 @@ clear.addEventListener('click', async () => {
 });
 refreshOverview.addEventListener('click', loadOverview);
 refreshSessions.addEventListener('click', loadSessions);
-refreshEvents.addEventListener('click', loadSecurityEvents);
+refreshEvents.addEventListener('click', () => void loadSecurityEvents());
+previousEvents.addEventListener('click', () => void loadSecurityEvents(securityEventsPage - 1));
+nextEvents.addEventListener('click', () => void loadSecurityEvents(securityEventsPage + 1));
 refreshAuditors.addEventListener('click', loadAuditors);
 createAuditorForm.addEventListener('submit', async event => {
   event.preventDefault();

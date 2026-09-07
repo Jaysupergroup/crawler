@@ -46,6 +46,7 @@ tr:last-child td { border-bottom: 0; }
 .event-details { overflow-wrap: anywhere; }
 #message { min-height: 24px; margin-top: 18px; color: #ffe2a8; }
 #overviewMessage, #sessionsMessage, #eventsMessage { min-height: 24px; color: #b9c8df; }
+.event-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }.event-pagination > div { display: flex; gap: 8px; }.event-pagination button { padding: 8px 11px; font-size: .8rem; }
 
 @media (max-width: 700px) {
   header { align-items: flex-start; flex-direction: column; }

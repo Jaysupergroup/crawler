@@ -486,14 +486,16 @@ export class CrawlStorage {
     return true;
   }
 
-  async listSecurityEvents(limit = 100) {
+  async listSecurityEvents(limit = 100, offset = 0) {
     if (!(await this.initialize()) || !this.pool) return [];
+    const pageSize = Math.min(Math.max(Number.parseInt(limit, 10) || 100, 1), 250);
+    const pageOffset = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), 1000000);
     const [rows] = await this.pool.execute(
       `SELECT id, event_type, outcome, admin_session_id, dashboard_session_id, ip_address, user_agent, metadata_json, created_at
        FROM security_events
        ORDER BY id DESC
-       LIMIT ?`,
-      [Math.min(Math.max(Number.parseInt(limit, 10) || 100, 1), 250)]
+       LIMIT ? OFFSET ?`,
+      [pageSize, pageOffset]
     );
     return rows.map(row => ({
       id: Number(row.id), eventType: row.event_type, outcome: row.outcome,
@@ -501,6 +503,12 @@ export class CrawlStorage {
       ipAddress: row.ip_address || 'Unknown', userAgent: row.user_agent || 'Unknown user agent',
       metadata: parseJson(row.metadata_json, {}), createdAt: row.created_at
     }));
+  }
+
+  async countSecurityEvents() {
+    if (!(await this.initialize()) || !this.pool) return 0;
+    const [[result]] = await this.pool.query('SELECT COUNT(*) AS total FROM security_events');
+    return Number(result.total || 0);
   }
 
   async getDatabaseOverview() {

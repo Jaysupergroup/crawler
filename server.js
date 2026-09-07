@@ -520,7 +520,13 @@ app.get('/api/admin/database-overview', requireAdmin, async (req, res) => {
 app.get('/api/admin/security-events', requireAdmin, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
-    res.json({ events: await crawlStorage.listSecurityEvents(10), storage: crawlStorage.getStatus() });
+    const pageSize = 10;
+    const requestedPage = Math.min(Math.max(Number.parseInt(req.query.page, 10) || 1, 1), 100000);
+    const total = await crawlStorage.countSecurityEvents();
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, totalPages);
+    const events = await crawlStorage.listSecurityEvents(pageSize, (page - 1) * pageSize);
+    res.json({ events, pagination: { page, pageSize, total, totalPages }, storage: crawlStorage.getStatus() });
   } catch (error) {
     res.status(503).json({ error: 'Could not load security activity.', storage: crawlStorage.getStatus() });
   }
