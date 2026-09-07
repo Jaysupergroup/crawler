@@ -59,12 +59,47 @@ function PageInspector({ page, onClose, initialTab = 'overview' }: { page: Crawl
   const [htmlComparisonRequested, setHtmlComparisonRequested] = useState(false);
   const [htmlError, setHtmlError] = useState<string | null>(null);
   const [contentCopyState, setContentCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [linkFilter, setLinkFilter] = useState<'all' | 'internal' | 'external' | 'redirects' | 'in-content' | '200' | 'errors' | 'nofollow'>('all');
+  const [linkSort, setLinkSort] = useState<{ key: 'status' | 'anchor' | 'destination' | 'type' | 'content' | 'source'; direction: 'asc' | 'desc' }>({ key: 'status', direction: 'asc' });
   const h1s = page.h1List?.filter(Boolean).join(' • ') || page.h1 || '[No H1 tag found]';
   const h2s = page.h2List?.filter(Boolean).join(' • ') || '[No H2 sub-headings found]';
   const extractedContent = content?.fullText || content?.textSnippet || page.fullPageText || '';
   const contentText = extractedContent || 'No rendered text was returned.';
   const links = page.links || [];
   const contentLabel = content?.detected ? 'Content area • Active' : 'Content area';
+  const filteredLinks = useMemo(() => {
+    const matches = links.filter(link => {
+      if (linkFilter === 'internal') return link.isInternal === true || link.linkType === 'Internal';
+      if (linkFilter === 'external') return link.linkType === 'External';
+      if (linkFilter === 'redirects') return (link.redirectCount || link.redirectChain?.length || 0) > 0;
+      if (linkFilter === 'in-content') return Boolean(link.isInsideCustom);
+      if (linkFilter === '200') return (link.statusCode ?? 0) === 200;
+      if (linkFilter === 'errors') return (link.statusCode ?? 0) === 0 || (link.statusCode ?? 0) >= 400;
+      if (linkFilter === 'nofollow') return Boolean(link.isNofollow);
+      return true;
+    });
+
+    return [...matches].sort((left, right) => {
+      const compare = (a: string | number, b: string | number) => typeof a === 'string' && typeof b === 'string' ? a.localeCompare(b) : Number(a) - Number(b);
+      const leftValue = linkSort.key === 'status' ? (left.statusCode ?? 0)
+        : linkSort.key === 'anchor' ? (left.anchorText || '')
+          : linkSort.key === 'destination' ? (left.targetUrl || left.url || '')
+            : linkSort.key === 'type' ? (left.linkType || '')
+              : linkSort.key === 'content' ? (left.isInsideCustom ? 1 : 0)
+                : (left.sourceUrl || '');
+      const rightValue = linkSort.key === 'status' ? (right.statusCode ?? 0)
+        : linkSort.key === 'anchor' ? (right.anchorText || '')
+          : linkSort.key === 'destination' ? (right.targetUrl || right.url || '')
+            : linkSort.key === 'type' ? (right.linkType || '')
+              : linkSort.key === 'content' ? (right.isInsideCustom ? 1 : 0)
+                : (right.sourceUrl || '');
+      const result = compare(leftValue, rightValue);
+      return linkSort.direction === 'asc' ? result : -result;
+    });
+  }, [linkFilter, linkSort, links]);
+  const linkFilterOptions: Array<[typeof linkFilter, string]> = [
+    ['all', 'All'], ['internal', 'Internal'], ['external', 'External'], ['redirects', 'Redirects'], ['in-content', 'In content'], ['200', '200 OK'], ['errors', 'Errors'], ['nofollow', 'Nofollow']
+  ];
   useEffect(() => {
     setTab(initialTab);
     setContentCopyState('idle');
@@ -126,7 +161,7 @@ function PageInspector({ page, onClose, initialTab = 'overview' }: { page: Crawl
           <article className="overview-card comparison-card"><span>Source HTML vs rendered DOM</span>{comparison?.available ? <><strong className={comparison.domChanged ? 'comparison-changed' : ''}>{comparison.domChanged ? 'DOM changed after rendering' : 'No meaningful DOM change detected'}</strong><small>{formatBytes(comparison.sourceHtmlBytes)} → {formatBytes(comparison.renderedHtmlBytes)} • {comparison.sourceWordCount?.toLocaleString() || 0} → {comparison.renderedWordCount?.toLocaleString() || 0} words • {comparison.renderedOnlyWordCount?.toLocaleString() || 0} rendered-only words</small></> : <strong>{comparison?.reason || 'This page has not been compared yet.'}</strong>}<button className="secondary comparison-open" onClick={openCodeComparison}>View actual HTML</button></article>
         </div>}
         {tab === 'content' && <section className="content-inspection"><div className="content-inspection-summary"><span className={content?.detected ? 'tag positive' : 'tag neutral'}>{content?.detected ? 'Content area detected' : 'Content area not detected'}</span><span>{content?.selectorUsed || 'No selector matched'}</span><span>{content?.wordCount?.toLocaleString() || page.totalWords?.toLocaleString() || 0} words</span><button className="secondary copy-content-button" onClick={() => void copyExtractedContent()} disabled={!extractedContent}>{contentCopyState === 'copied' ? '✓ Copied' : contentCopyState === 'failed' ? 'Copy failed' : 'Copy all content'}</button></div><div className="content-inspection-grid"><article><span>Extracted sub-headings</span><p>{[...new Set([...(content?.headings || []), ...(page.h2List || [])])].join(' • ') || '[No sub-headings found]'}</p></article><article><span>Extracted rendered content</span><pre>{contentText}</pre></article></div></section>}
-        {tab === 'links' && <section className="inspection-links"><div className="table-wrap"><table><thead><tr><th>Status</th><th>Anchor text</th><th>Destination URL</th><th>Type</th><th>In content area</th></tr></thead><tbody>{links.length ? links.map((link, index) => <tr key={`${link.url || link.targetUrl}-${index}`}><td><span className={link.statusCode === 200 ? 'code success' : (link.statusCode || 0) >= 400 ? 'code failure' : 'code neutral'}>{link.statusCode ?? '—'}</span></td><td>{link.anchorText || '[No text]'}</td><td className="url">{link.url || link.targetUrl || link.rawHref || '—'}</td><td>{link.linkType || 'Unknown'}</td><td>{link.isInsideCustom ? 'Yes' : 'No'}</td></tr>) : <tr><td colSpan={5} className="empty">No links were discovered on this page.</td></tr>}</tbody></table></div></section>}
+        {tab === 'links' && <section className="inspection-links"><div className="link-detail-toolbar"><div className="link-detail-filter-group" aria-label="Filter discovered links">{linkFilterOptions.map(([value, label]) => <button key={value} type="button" className={linkFilter === value ? 'pill active' : 'pill'} onClick={() => setLinkFilter(value)}>{label}</button>)}</div><label className="link-detail-sort">Sort<select value={linkSort.key} onChange={event => setLinkSort(current => ({ ...current, key: event.target.value as typeof current.key }))}><option value="status">Status</option><option value="anchor">Anchor text</option><option value="destination">Destination</option><option value="type">Type</option><option value="content">Content area</option><option value="source">Source page</option></select><button type="button" className="sort-button" onClick={() => setLinkSort(current => ({ ...current, direction: current.direction === 'asc' ? 'desc' : 'asc' }))}>{linkSort.direction === 'asc' ? 'Ascending' : 'Descending'}</button></label></div><div className="table-wrap"><table><thead><tr><th>Status</th><th>Anchor text</th><th>Destination URL</th><th>Type</th><th>In content area</th></tr></thead><tbody>{filteredLinks.length ? filteredLinks.map((link, index) => <tr key={`${link.url || link.targetUrl}-${index}`}><td><span className={link.statusCode === 200 ? 'code success' : (link.statusCode || 0) >= 400 ? 'code failure' : 'code neutral'}>{link.statusCode ?? '—'}</span></td><td>{link.anchorText || '[No text]'}</td><td className="url">{link.url || link.targetUrl || link.rawHref || '—'}</td><td>{link.linkType || 'Unknown'}</td><td>{link.isInsideCustom ? 'Yes' : 'No'}</td></tr>) : <tr><td colSpan={5} className="empty">No links match the current filter.</td></tr>}</tbody></table></div></section>}
         {tab === 'code' && <section className="html-comparison"><p>The source and rendered DOM are captured when you open this tab. They are not stored in the crawl database.</p>{(htmlLoading || (!htmlCapture && htmlComparisonRequested && !htmlError)) && <div className="comparison-loading" role="status" aria-live="polite"><span className="loading-spinner" aria-hidden="true" /><div><strong>Preparing comparison</strong><p>Capturing the source HTML and browser-rendered DOM…</p></div></div>}{htmlError && <div className="comparison-error"><p>{htmlError}</p><button className="secondary" onClick={() => void loadHtmlComparison()}>Try again</button></div>}{htmlCapture && <><div className="html-comparison-summary"><span className={htmlCapture.comparison.available && htmlCapture.comparison.domChanged ? 'tag positive' : 'tag neutral'}>{htmlCapture.comparison.available ? (htmlCapture.comparison.domChanged ? 'DOM changed after rendering' : 'No meaningful DOM change detected') : 'Comparison unavailable'}</span><small>Captured {new Date(htmlCapture.capturedAt).toLocaleString()}</small></div><div className="html-code-grid"><article><header><div><strong>Original source HTML</strong><small>{htmlCapture.source.url}</small></div><span>{formatBytes(htmlCapture.source.totalBytes)}{htmlCapture.source.truncated ? ' • preview truncated at 2 MB' : ''}</span></header><pre>{htmlCapture.source.html || '[Source HTML could not be retrieved.]'}</pre></article><article><header><div><strong>Rendered DOM</strong><small>{htmlCapture.rendered.url}</small></div><span>{formatBytes(htmlCapture.rendered.totalBytes)}{htmlCapture.rendered.truncated ? ' • preview truncated at 2 MB' : ''}</span></header>{htmlCapture.rendered.error ? <p className="comparison-error">{htmlCapture.rendered.error}</p> : <pre>{htmlCapture.rendered.html || '[Rendered DOM could not be retrieved.]'}</pre>}</article></div></>}</section>}
       </div>
     </section>
