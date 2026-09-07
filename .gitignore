@@ -1,4 +1,4 @@
 /node_modules
 /.tmp/
 crawler-deploy.zip
-src/public/.DS_Store
+.DS_Store
