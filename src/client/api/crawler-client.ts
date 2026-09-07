@@ -78,6 +78,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const crawlerClient = {
+  async logout() {
+    const response = await fetch('/api/access/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    dashboardSessionId = null;
+    sessionStorage.removeItem(SESSION_KEY);
+    if (!response.ok && response.status !== 401) {
+      const body = await response.json().catch(() => ({ error: 'Could not sign out.' }));
+      throw new Error(typeof body.error === 'string' ? body.error : 'Could not sign out.');
+    }
+  },
   ready: () => ensureDashboardSession(),
   snapshot: (signal?: AbortSignal) => request<CrawlerSnapshot>('/api/crawler/snapshot', {
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)]) : AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)

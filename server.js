@@ -490,6 +490,23 @@ app.post('/api/admin/logout', requireAdmin, requireSameOrigin, (req, res) => {
   res.json({ success: true });
 });
 
+// The dashboard is available to both account types, so it has its own
+// sign-out route. Ending the account session also revokes its dashboard tabs
+// and stops an in-progress crawl rather than leaving it running unattended.
+app.post('/api/access/logout', requireDashboardUser, requireSameOrigin, (req, res) => {
+  const principal = req.dashboardPrincipal;
+  principal.session.endedAt = Date.now();
+  for (const [dashboardId, dashboard] of dashboardSessions) {
+    if (dashboard.ownerRole === principal.role && dashboard.ownerSessionId === principal.id) revokeDashboardSession(dashboardId);
+  }
+  auditSecurityEvent(req, 'access.logout', 'success', { accountType: principal.role, ...(principal.username ? { username: principal.username } : {}) }, {
+    adminSession: principal.role === 'Administrator' ? principal.session : null
+  });
+  if (principal.role === 'Administrator') res.clearCookie('omnicrawl_admin', adminCookieOptions(req));
+  else res.clearCookie('omnicrawl_auditor', auditorCookieOptions(req));
+  res.json({ success: true });
+});
+
 app.get('/api/admin/database-overview', requireAdmin, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {

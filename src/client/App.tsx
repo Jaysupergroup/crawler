@@ -144,6 +144,7 @@ export default function App() {
   const [completionNotice, setCompletionNotice] = useState<string | null>(null);
   const [restoringAudit, setRestoringAudit] = useState<{ pageCount: number; expectedPages: number | null; stage: 'restoring' | 'rendering' } | null>(null);
   const [commandPending, setCommandPending] = useState<'start' | 'pause' | 'resume' | 'stop' | 'reset' | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const completionNotificationEligible = useRef(false);
   const notifiedCompletion = useRef<number | null>(null);
   const running = crawler.state === 'running' || crawler.state === 'paused' || crawler.state === 'stopping';
@@ -233,9 +234,17 @@ export default function App() {
     try { await crawler.run(action); }
     finally { setCommandPending(null); }
   }
+  async function signOut() {
+    setSigningOut(true);
+    try {
+      await crawlerClient.logout();
+    } finally {
+      window.location.assign('/admin/login');
+    }
+  }
 
   return <div className="app-shell">
-    <header className="topbar"><div><span className="brand-mark">⌘</span><span className="brand">CrawlLoom <small>Browser-rendered SEO crawler</small></span></div><div className="topbar-status"><a className="docs-link" href="/">Home</a>{isAdministrator && <a className="docs-link" href="/admin">Administration</a>}<a className="docs-link" href="/docs" target="_blank" rel="noopener noreferrer" aria-label="Documentation (opens in a new tab)">Documentation</a><span className="crawl-capacity">{crawlSlotLabel}</span><span className={`status ${crawler.state}`}><i />{statusLabel(crawler.state, crawler.engine?.mode)}</span></div></header>
+    <header className="topbar"><div><span className="brand-mark">⌘</span><span className="brand">CrawlLoom <small>Browser-rendered SEO crawler</small></span></div><div className="topbar-status"><a className="docs-link" href="/">Home</a>{isAdministrator && <a className="docs-link" href="/admin">Administration</a>}<a className="docs-link" href="/docs" target="_blank" rel="noopener noreferrer" aria-label="Documentation (opens in a new tab)">Documentation</a><button className="topbar-action" type="button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button><span className="crawl-capacity">{crawlSlotLabel}</span><span className={`status ${crawler.state}`}><i />{statusLabel(crawler.state, crawler.engine?.mode)}</span></div></header>
     <main>
       <section className="card config-card">
         <div className="section-heading"><div><p className="eyebrow">Crawl target</p><h1>Start a browser-rendered audit</h1></div><button className="secondary" type="button" onClick={() => setAdvanced(open => !open)}>{advanced ? 'Hide advanced' : 'Advanced directives'}</button></div>
