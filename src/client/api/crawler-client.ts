@@ -1,7 +1,7 @@
 import type { CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLink, CrawlHistoryDetail, CrawlHistoryRecord, HtmlComparisonCapture } from '../types/crawl';
 
 // The browser retains only a server-issued opaque ID. The API verifies that ID
-// belongs to the currently signed-in administrator before serving crawl data.
+// belongs to the currently signed-in account before serving crawl data.
 const SESSION_KEY = 'crawlloom-dashboard-session';
 // Saved multi-thousand-page audits are much larger than routine live updates.
 // Give their one-off restore enough time on a cloud-hosted connection.

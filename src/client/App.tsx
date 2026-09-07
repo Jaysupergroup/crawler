@@ -107,6 +107,7 @@ function PageInspector({ page, onClose, initialTab = 'overview' }: { page: Crawl
 
 export default function App() {
   const crawler = useCrawler();
+  const [isAdministrator, setIsAdministrator] = useState(false);
   const [config, setConfig] = useState<CrawlConfig>(DEFAULT_CONFIG);
   const [advanced, setAdvanced] = useState(false);
   const [search, setSearch] = useState('');
@@ -126,6 +127,16 @@ export default function App() {
   const crawlSlotLabel = availableCrawlSlots === undefined
     ? 'Checking crawl capacity…'
     : `${availableCrawlSlots} crawl slot${availableCrawlSlots === 1 ? '' : 's'} free`;
+  useEffect(() => {
+    let active = true;
+    void fetch('/api/admin/session', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then((session: { administrator?: boolean } | null) => {
+        if (active) setIsAdministrator(session?.administrator === true);
+      })
+      .catch(() => { if (active) setIsAdministrator(false); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const completedAt = crawler.stats.endTime;
     const pageCount = crawler.stats.pagesCrawled || 0;
@@ -198,7 +209,7 @@ export default function App() {
   }
 
   return <div className="app-shell">
-    <header className="topbar"><div><span className="brand-mark">⌘</span><span className="brand">CrawlLoom <small>Browser-rendered SEO crawler</small></span></div><div className="topbar-status"><a className="docs-link" href="/">Home</a><a className="docs-link" href="/admin">Administration</a><a className="docs-link" href="/docs" target="_blank" rel="noopener noreferrer" aria-label="Documentation (opens in a new tab)">Documentation</a><span className="crawl-capacity">{crawlSlotLabel}</span><span className={`status ${crawler.state}`}><i />{statusLabel(crawler.state, crawler.engine?.mode)}</span></div></header>
+    <header className="topbar"><div><span className="brand-mark">⌘</span><span className="brand">CrawlLoom <small>Browser-rendered SEO crawler</small></span></div><div className="topbar-status"><a className="docs-link" href="/">Home</a>{isAdministrator && <a className="docs-link" href="/admin">Administration</a>}<a className="docs-link" href="/docs" target="_blank" rel="noopener noreferrer" aria-label="Documentation (opens in a new tab)">Documentation</a><span className="crawl-capacity">{crawlSlotLabel}</span><span className={`status ${crawler.state}`}><i />{statusLabel(crawler.state, crawler.engine?.mode)}</span></div></header>
     <main>
       <section className="card config-card">
         <div className="section-heading"><div><p className="eyebrow">Crawl target</p><h1>Start a browser-rendered audit</h1></div><button className="secondary" type="button" onClick={() => setAdvanced(open => !open)}>{advanced ? 'Hide advanced' : 'Advanced directives'}</button></div>
