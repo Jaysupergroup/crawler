@@ -28,10 +28,11 @@ main {
 h1 { margin: 0 0 8px; font-size: 1.55rem; }
 p { margin: 0 0 26px; color: #aebcd8; line-height: 1.55; }
 .login-navigation { margin: -10px 0 22px; font-size: .88rem; }.login-navigation a { color: #b8d0ff; text-decoration: none; }.login-navigation a:hover { color: #fff; text-decoration: underline; }
-label { display: block; margin-bottom: 8px; color: #cdd9f0; font-size: .9rem; font-weight: 600; }
+label { display: block; margin: 16px 0 8px; color: #cdd9f0; font-size: .9rem; font-weight: 600; } label:first-of-type { margin-top: 0; } label small { color: #9fb0cf; font-weight: 500; }
 input { width: 100%; padding: 13px; border: 1px solid #4b5e8e; border-radius: 8px; background: #0e1830; color: #fff; font: inherit; }
 input:focus { outline: 2px solid #7da4ff; outline-offset: 2px; }
 button { width: 100%; margin-top: 18px; padding: 13px; border: 0; border-radius: 8px; background: #4178f2; color: white; cursor: pointer; font: 700 1rem inherit; }
 button:hover { background: #3066da; }
 button:disabled { opacity: .6; cursor: wait; }
 #message { min-height: 22px; margin-top: 16px; color: #ffabb3; font-size: .9rem; }
+.login-help { margin: 17px 0 0; color: #9fb0cf; font-size: .78rem; }

@@ -14,6 +14,17 @@
   </header>
   <main>
     <section class="panel overview">
+      <div class="section-head"><h2>Auditor accounts</h2><button id="refreshAuditors" class="secondary" type="button">Refresh</button></div>
+      <p class="muted">Auditors have their own sign-in and can run crawls, view saved audits, and export reports. They cannot open this administration page or change users, sessions, or stored data.</p>
+      <form id="createAuditorForm" class="auditor-form">
+        <label for="auditorUsername">Username<input id="auditorUsername" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. jane.audit" required></label>
+        <label for="auditorPassword">Password<input id="auditorPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+        <button class="secondary" type="submit">Create auditor</button>
+      </form>
+      <p id="auditorsMessage" role="status">Loading auditor accounts…</p>
+      <div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr></thead><tbody id="auditorsTable"><tr><td colspan="6" class="muted">Loading auditor accounts…</td></tr></tbody></table></div>
+    </section>
+    <section class="panel overview">
       <div class="section-head"><h2>Database storage overview</h2><button id="refreshOverview" class="secondary" type="button">Refresh</button></div>
       <p id="overviewMessage" role="status">Loading saved-crawl storage details…</p>
       <div id="overviewContent" class="hidden">

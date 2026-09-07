@@ -13,9 +13,12 @@
     <p>This is a private crawler. Sign in to access audits, history, and administration.</p>
     <p class="login-navigation"><a href="/">← Back to home</a></p>
     <form id="loginForm">
-      <label for="password">Administrator password</label>
+      <label for="username">Username <small>(Auditor accounts only)</small></label>
+      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+      <label for="password">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
       <button id="submitButton" type="submit">Sign in</button>
+      <p class="login-help">Administrators leave the username blank and use the owner password. Auditors use their assigned username and password.</p>
       <div id="message" role="alert"></div>
     </form>
   </main>

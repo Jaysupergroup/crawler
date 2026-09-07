@@ -10,6 +10,12 @@ const sessionsTable = document.getElementById('sessionsTable');
 const refreshEvents = document.getElementById('refreshEvents');
 const eventsMessage = document.getElementById('eventsMessage');
 const eventsTable = document.getElementById('eventsTable');
+const createAuditorForm = document.getElementById('createAuditorForm');
+const auditorUsername = document.getElementById('auditorUsername');
+const auditorPassword = document.getElementById('auditorPassword');
+const refreshAuditors = document.getElementById('refreshAuditors');
+const auditorsMessage = document.getElementById('auditorsMessage');
+const auditorsTable = document.getElementById('auditorsTable');
 const formatNumber = value => Number(value || 0).toLocaleString();
 const formatBytes = value => {
   const bytes = Number(value || 0);
@@ -99,6 +105,22 @@ async function loadSecurityEvents() {
   }
 }
 
+async function loadAuditors() {
+  refreshAuditors.disabled = true;
+  auditorsMessage.textContent = 'Loading auditor accounts…';
+  try {
+    const response = await fetch('/api/admin/auditors', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not load auditor accounts.');
+    auditorsTable.innerHTML = data.auditors.map(auditor => `<tr><td><code>${escapeHtml(auditor.username)}</code></td><td>Auditor</td><td><span class="session-status ${escapeHtml(String(auditor.status).toLowerCase())}">${escapeHtml(auditor.status)}</span></td><td>${escapeHtml(formatDate(auditor.createdAt))}</td><td>${escapeHtml(formatDate(auditor.lastLoginAt))}</td><td>${auditor.status === 'active' ? `<button class="revoke" type="button" data-auditor-id="${escapeHtml(auditor.id)}">Disable</button>` : '<span class="muted">—</span>'}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No auditor accounts have been created yet.</td></tr>';
+    auditorsMessage.textContent = `${data.auditors.length} auditor account${data.auditors.length === 1 ? '' : 's'} found.`;
+  } catch (error) {
+    auditorsMessage.textContent = error.message;
+  } finally {
+    refreshAuditors.disabled = false;
+  }
+}
+
 confirmation.addEventListener('input', () => { clear.disabled = confirmation.value !== 'DELETE ALL'; });
 clear.addEventListener('click', async () => {
   clear.disabled = true;
@@ -122,6 +144,40 @@ clear.addEventListener('click', async () => {
 refreshOverview.addEventListener('click', loadOverview);
 refreshSessions.addEventListener('click', loadSessions);
 refreshEvents.addEventListener('click', loadSecurityEvents);
+refreshAuditors.addEventListener('click', loadAuditors);
+createAuditorForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const submit = createAuditorForm.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  auditorsMessage.textContent = 'Creating auditor account…';
+  try {
+    const response = await fetch('/api/admin/auditors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: auditorUsername.value, password: auditorPassword.value }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not create auditor account.');
+    auditorUsername.value = '';
+    auditorPassword.value = '';
+    auditorsMessage.textContent = `Auditor “${data.auditor.username}” was created. Share the username and assigned password privately.`;
+    await loadAuditors();
+  } catch (error) {
+    auditorsMessage.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+});
+auditorsTable.addEventListener('click', async event => {
+  const button = event.target.closest('[data-auditor-id]');
+  if (!button || !window.confirm('Disable this auditor? Their active dashboard sessions will be revoked.')) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/admin/auditors/${encodeURIComponent(button.dataset.auditorId)}/disable`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not disable auditor account.');
+    await loadAuditors();
+  } catch (error) {
+    auditorsMessage.textContent = error.message;
+    button.disabled = false;
+  }
+});
 sessionsTable.addEventListener('click', async event => {
   const button = event.target.closest('[data-session-id]');
   if (!button || !window.confirm('Revoke this session? Any crawl owned by that dashboard tab will be stopped.')) return;
@@ -139,6 +195,7 @@ sessionsTable.addEventListener('click', async event => {
 loadOverview();
 loadSessions();
 loadSecurityEvents();
+loadAuditors();
 document.getElementById('logout').addEventListener('click', async () => {
   await fetch('/api/admin/logout', { method: 'POST' });
   window.location.assign('/admin/login');

@@ -172,6 +172,24 @@ export class CrawlStorage {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
+    // Auditor accounts are deliberately separate from the environment-backed
+    // owner password. Only a password hash is stored; a user can be disabled
+    // without changing the owner's credentials.
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS app_users (
+        id CHAR(36) NOT NULL PRIMARY KEY,
+        username VARCHAR(64) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(24) NOT NULL DEFAULT 'auditor',
+        status VARCHAR(24) NOT NULL DEFAULT 'active',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_login_at DATETIME NULL,
+        disabled_at DATETIME NULL,
+        UNIQUE KEY uq_app_users_username (username),
+        INDEX idx_app_users_role_status (role, status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
     try {
       await this.pool.query('ALTER TABLE crawl_pages ADD COLUMN images_json JSON NULL');
     } catch (error) {
@@ -215,6 +233,56 @@ export class CrawlStorage {
        VALUES (?, ?, ?, ?, 'starting')`,
       [id, sessionId, seedUrl, JSON.stringify(config)]
     );
+    return true;
+  }
+
+  async createAuditor({ id, username, passwordHash }) {
+    if (!(await this.initialize()) || !this.pool) throw new Error('Persistent user storage is not connected.');
+    try {
+      await this.pool.execute(
+        `INSERT INTO app_users (id, username, password_hash, role, status)
+         VALUES (?, ?, ?, 'auditor', 'active')`,
+        [id, username, passwordHash]
+      );
+      return { id, username, role: 'auditor', status: 'active' };
+    } catch (error) {
+      if (error.code === 'ER_DUP_ENTRY') throw new Error('That username is already in use.');
+      throw error;
+    }
+  }
+
+  async findActiveAuditor(username) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const [rows] = await this.pool.execute(
+      `SELECT id, username, password_hash AS passwordHash, role, status
+       FROM app_users WHERE username = ? AND role = 'auditor' AND status = 'active' LIMIT 1`,
+      [username]
+    );
+    return rows[0] || null;
+  }
+
+  async listAuditors() {
+    if (!(await this.initialize()) || !this.pool) throw new Error('Persistent user storage is not connected.');
+    const [rows] = await this.pool.query(
+      `SELECT id, username, role, status, created_at AS createdAt, last_login_at AS lastLoginAt, disabled_at AS disabledAt
+       FROM app_users WHERE role = 'auditor' ORDER BY created_at DESC`
+    );
+    return rows.map(row => ({ ...row }));
+  }
+
+  async markAuditorLoggedIn(id) {
+    if (!(await this.initialize()) || !this.pool) return;
+    await this.pool.execute('UPDATE app_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ? AND status = \'active\'', [id]);
+  }
+
+  async disableAuditor(id) {
+    if (!(await this.initialize()) || !this.pool) throw new Error('Persistent user storage is not connected.');
+    const [result] = await this.pool.execute(
+      `UPDATE app_users SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND role = 'auditor' AND status = 'active'`,
+      [id]
+    );
+    if (!result.affectedRows) throw new Error('That auditor account is already disabled or no longer exists.');
     return true;
   }
 
@@ -461,7 +529,7 @@ export class CrawlStorage {
         COALESCE(data_length, 0) + COALESCE(index_length, 0) AS totalBytes
       FROM information_schema.tables
       WHERE table_schema = DATABASE()
-        AND table_name IN ('crawl_runs', 'crawl_pages', 'crawl_links', 'security_events')
+        AND table_name IN ('crawl_runs', 'crawl_pages', 'crawl_links', 'security_events', 'app_users')
       ORDER BY table_name
     `);
     const [[latestCrawl]] = await this.pool.query(`

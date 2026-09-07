@@ -1,7 +1,8 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'crypto';
+import { promisify } from 'util';
 import { SiteCrawler } from './src/engine/crawler.js';
 import { Extractor } from './src/engine/extractor.js';
 import { Exporter } from './src/engine/exporter.js';
@@ -42,6 +43,8 @@ const SESSION_ACTIVITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SESSION_RECORDS = 100;
 const adminLoginAttempts = new Map();
 const adminSessions = new Map();
+const auditorSessions = new Map();
+const scryptAsync = promisify(scrypt);
 const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'https://workva.co.za').replace(/\/$/, '');
 const crawlNetworkPolicy = new CrawlNetworkPolicy();
 const ALLOWED_CRAWL_REGIONS = new Set(['auto', ...Object.keys(GEO_PRESETS)]);
@@ -146,7 +149,7 @@ function describeDevice(userAgent = '') {
 
 function pruneSessionRecords() {
   const cutoff = Date.now() - SESSION_ACTIVITY_RETENTION_MS;
-  for (const sessions of [adminSessions, dashboardSessions]) {
+  for (const sessions of [adminSessions, auditorSessions, dashboardSessions]) {
     for (const [id, record] of sessions) {
       if ((record.lastSeenAt || record.createdAt) < cutoff) sessions.delete(id);
     }
@@ -176,6 +179,25 @@ function createAdminSession(req) {
   return { token: `${payload}.${signAdminPayload(payload)}`, session };
 }
 
+function createAuditorSession(req, user) {
+  pruneSessionRecords();
+  const id = randomUUID();
+  const expiresAt = Date.now() + ADMIN_SESSION_TTL_MS;
+  const session = {
+    id,
+    userId: user.id,
+    username: user.username,
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+    expiresAt,
+    ip: getClientIp(req),
+    userAgent: req.get('user-agent') || 'Unknown user agent'
+  };
+  auditorSessions.set(id, session);
+  const payload = Buffer.from(JSON.stringify({ id, exp: expiresAt })).toString('base64url');
+  return { token: `${payload}.${signAdminPayload(payload)}`, session };
+}
+
 function getAdminSession(req, touch = true) {
   if (!ADMIN_PASSWORD || !ADMIN_SESSION_SECRET) return false;
   const token = parseCookies(req).omnicrawl_admin;
@@ -195,6 +217,35 @@ function getAdminSession(req, touch = true) {
   } catch {
     return false;
   }
+}
+
+function getAuditorSession(req, touch = true) {
+  if (!ADMIN_SESSION_SECRET) return false;
+  const token = parseCookies(req).omnicrawl_auditor;
+  if (!token) return false;
+  const [payload, signature, ...extra] = token.split('.');
+  if (!payload || !signature || extra.length) return false;
+  const expected = signAdminPayload(payload);
+  const expectedBuffer = Buffer.from(expected);
+  const receivedBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== receivedBuffer.length || !timingSafeEqual(expectedBuffer, receivedBuffer)) return false;
+  try {
+    const { id, exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const session = typeof id === 'string' ? auditorSessions.get(id) : null;
+    if (!session || session.revokedAt || session.endedAt || !Number.isFinite(exp) || exp <= Date.now() || session.expiresAt <= Date.now()) return false;
+    if (touch) session.lastSeenAt = Date.now();
+    return session;
+  } catch {
+    return false;
+  }
+}
+
+function getDashboardPrincipal(req, touch = true) {
+  const admin = getAdminSession(req, touch);
+  if (admin) return { role: 'Administrator', id: admin.id, session: admin };
+  const auditor = getAuditorSession(req, touch);
+  if (auditor) return { role: 'Auditor', id: auditor.id, userId: auditor.userId, username: auditor.username, session: auditor };
+  return null;
 }
 
 // Logging is deliberately best-effort: an unavailable database must never
@@ -227,6 +278,10 @@ function hasValidAdminSession(req) {
   return Boolean(getAdminSession(req));
 }
 
+function hasValidDashboardAccess(req) {
+  return Boolean(getDashboardPrincipal(req));
+}
+
 function isSecureRequest(req) {
   return req.secure || req.get('x-forwarded-proto') === 'https' || process.env.NODE_ENV === 'production';
 }
@@ -241,9 +296,22 @@ function adminCookieOptions(req) {
   };
 }
 
+function auditorCookieOptions(req) {
+  return { ...adminCookieOptions(req), maxAge: ADMIN_SESSION_TTL_MS };
+}
+
 function requireAdmin(req, res, next) {
   if (!PRIVATE_ACCESS_CONFIGURED) return res.status(503).json({ error: 'Private access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.' });
   if (!hasValidAdminSession(req)) return res.status(401).json({ error: 'Administrator login required.' });
+  res.setHeader('Cache-Control', 'no-store');
+  return next();
+}
+
+function requireDashboardUser(req, res, next) {
+  if (!PRIVATE_ACCESS_CONFIGURED) return res.status(503).json({ error: 'Private access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.' });
+  const principal = getDashboardPrincipal(req);
+  if (!principal) return res.status(401).json({ error: 'Sign in is required.' });
+  req.dashboardPrincipal = principal;
   res.setHeader('Cache-Control', 'no-store');
   return next();
 }
@@ -277,7 +345,7 @@ function requireDashboardAccess(req, res, next) {
   if (!PRIVATE_ACCESS_CONFIGURED) {
     return res.status(503).type('text/plain').send('CrawlLoom private access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET in the hosting environment.');
   }
-  if (!hasValidAdminSession(req)) {
+  if (!hasValidDashboardAccess(req)) {
     return res.redirect(`/admin/login?next=${encodeURIComponent(safeNextPath(req.originalUrl))}`);
   }
   return next();
@@ -301,6 +369,33 @@ function passwordsMatch(candidate) {
   return expectedBuffer.length === candidateBuffer.length && timingSafeEqual(expectedBuffer, candidateBuffer);
 }
 
+function normalizeUsername(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function validAuditorUsername(value) {
+  return /^[a-z][a-z0-9._-]{2,63}$/.test(value);
+}
+
+async function hashAuditorPassword(password) {
+  const salt = randomBytes(16).toString('base64url');
+  const hash = await scryptAsync(password, salt, 64);
+  return `scrypt$${salt}$${Buffer.from(hash).toString('base64url')}`;
+}
+
+async function auditorPasswordMatches(password, storedHash) {
+  if (typeof password !== 'string' || typeof storedHash !== 'string') return false;
+  const [algorithm, salt, encodedHash, ...extra] = storedHash.split('$');
+  if (algorithm !== 'scrypt' || !salt || !encodedHash || extra.length) return false;
+  try {
+    const expected = Buffer.from(encodedHash, 'base64url');
+    const actual = Buffer.from(await scryptAsync(password, salt, expected.length));
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
 function sendAdminAsset(filename) {
   return (req, res) => res.sendFile(path.join(__dirname, 'src', 'admin', filename));
 }
@@ -310,12 +405,16 @@ function sendAdminAsset(filename) {
 // environment, and every data-changing endpoint requires its signed HTTP-only cookie.
 app.get('/admin/login.css', sendAdminAsset('login.css'));
 app.get('/admin/login.js', sendAdminAsset('login.js'));
-app.get('/admin/admin.css', requireDashboardAccess, sendAdminAsset('admin.css'));
-app.get('/admin/admin.js', requireDashboardAccess, sendAdminAsset('admin.js'));
+app.get('/admin/admin.css', requireAdmin, sendAdminAsset('admin.css'));
+app.get('/admin/admin.js', requireAdmin, sendAdminAsset('admin.js'));
 
 app.get('/admin/login', (req, res) => {
   if (!PRIVATE_ACCESS_CONFIGURED) return res.status(503).type('text/plain').send('Private access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET in the hosting environment.');
-  if (hasValidAdminSession(req)) return res.redirect(safeNextPath(req.query.next, '/app'));
+  const principal = getDashboardPrincipal(req);
+  if (principal) {
+    const requested = safeNextPath(req.query.next, '/app');
+    return res.redirect(principal.role === 'Administrator' ? requested : (requested.startsWith('/admin') ? '/app' : requested));
+  }
   res.setHeader('Cache-Control', 'no-store');
   return res.sendFile(path.join(__dirname, 'src', 'admin', 'login.html'));
 });
@@ -329,10 +428,11 @@ app.get('/admin', (req, res) => {
 
 app.get('/api/admin/session', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ configured: PRIVATE_ACCESS_CONFIGURED, authenticated: hasValidAdminSession(req) });
+  const principal = getDashboardPrincipal(req, false);
+  res.json({ configured: PRIVATE_ACCESS_CONFIGURED, authenticated: Boolean(principal), administrator: principal?.role === 'Administrator', role: principal?.role || null });
 });
 
-app.post('/api/admin/login', requireSameOrigin, (req, res) => {
+app.post('/api/admin/login', requireSameOrigin, async (req, res) => {
   if (!PRIVATE_ACCESS_CONFIGURED) return res.status(503).json({ error: 'Private access is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.' });
   const { key, attempt } = getLoginAttempt(req);
   if (attempt.count >= ADMIN_LOGIN_MAX_ATTEMPTS) {
@@ -341,17 +441,45 @@ app.post('/api/admin/login', requireSameOrigin, (req, res) => {
     auditSecurityEvent(req, 'admin.login', 'denied', { reason: 'rate-limited' });
     return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSeconds / 60)} minute(s).` });
   }
-  if (!passwordsMatch(req.body?.password)) {
+  const username = normalizeUsername(req.body?.username);
+  let auditor = null;
+  let authenticated = false;
+  if (username) {
+    try {
+      auditor = await crawlStorage.findActiveAuditor(username);
+      authenticated = Boolean(auditor && await auditorPasswordMatches(req.body?.password, auditor.passwordHash));
+    } catch (error) {
+      console.error('Could not verify auditor account:', error.message);
+    }
+  } else {
+    authenticated = passwordsMatch(req.body?.password);
+  }
+  if (!authenticated) {
     attempt.count++;
-    auditSecurityEvent(req, 'admin.login', 'denied', { reason: 'incorrect-password' });
-    return res.status(401).json({ error: 'Incorrect password.' });
+    auditSecurityEvent(req, 'access.login', 'denied', { reason: 'incorrect-credentials', accountType: username ? 'auditor' : 'administrator' });
+    return res.status(401).json({ error: 'Incorrect username or password.' });
   }
   adminLoginAttempts.delete(key);
   res.setHeader('Cache-Control', 'no-store');
+  if (auditor) {
+    // A browser can only operate as one account at a time. Clearing an owner
+    // cookie here prevents a test sign-in from silently retaining owner access.
+    const existingAdmin = getAdminSession(req, false);
+    if (existingAdmin) existingAdmin.endedAt = Date.now();
+    res.clearCookie('omnicrawl_admin', adminCookieOptions(req));
+    const created = createAuditorSession(req, auditor);
+    await crawlStorage.markAuditorLoggedIn(auditor.id).catch(() => {});
+    auditSecurityEvent(req, 'auditor.login', 'success', { username: auditor.username });
+    res.cookie('omnicrawl_auditor', created.token, auditorCookieOptions(req));
+    return res.json({ success: true, role: 'Auditor' });
+  }
+  const existingAuditor = getAuditorSession(req, false);
+  if (existingAuditor) existingAuditor.endedAt = Date.now();
+  res.clearCookie('omnicrawl_auditor', auditorCookieOptions(req));
   const created = createAdminSession(req);
   auditSecurityEvent(req, 'admin.login', 'success', {}, { adminSession: created.session });
   res.cookie('omnicrawl_admin', created.token, adminCookieOptions(req));
-  return res.json({ success: true });
+  return res.json({ success: true, role: 'Administrator' });
 });
 
 app.post('/api/admin/logout', requireAdmin, requireSameOrigin, (req, res) => {
@@ -381,6 +509,47 @@ app.get('/api/admin/security-events', requireAdmin, async (req, res) => {
   }
 });
 
+app.get('/api/admin/auditors', requireAdmin, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    res.json({ auditors: await crawlStorage.listAuditors() });
+  } catch (error) {
+    res.status(503).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/auditors', requireAdmin, requireSameOrigin, async (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!validAuditorUsername(username)) return res.status(400).json({ error: 'Use 3–64 lowercase letters, numbers, dots, dashes, or underscores for the username.' });
+  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: 'Use a password between 12 and 128 characters.' });
+  try {
+    const auditor = await crawlStorage.createAuditor({ id: randomUUID(), username, passwordHash: await hashAuditorPassword(password) });
+    auditSecurityEvent(req, 'auditor.created', 'success', { username }, { adminSession: getAdminSession(req, false) });
+    res.status(201).json({ success: true, auditor });
+  } catch (error) {
+    res.status(503).json({ error: error.message || 'Could not create the auditor account.' });
+  }
+});
+
+app.post('/api/admin/auditors/:userId/disable', requireAdmin, requireSameOrigin, async (req, res) => {
+  const userId = req.params.userId;
+  if (!/^[a-f0-9-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Invalid auditor identifier.' });
+  try {
+    await crawlStorage.disableAuditor(userId);
+    for (const session of auditorSessions.values()) {
+      if (session.userId === userId) session.revokedAt = Date.now();
+    }
+    for (const [dashboardId, session] of dashboardSessions) {
+      if (session.ownerRole === 'Auditor' && session.ownerUserId === userId) revokeDashboardSession(dashboardId);
+    }
+    auditSecurityEvent(req, 'auditor.disabled', 'success', { userIdSuffix: userId.slice(-4) }, { adminSession: getAdminSession(req, false) });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(503).json({ error: error.message || 'Could not disable the auditor account.' });
+  }
+});
+
 app.post('/api/admin/crawl-history/clear', requireAdmin, requireSameOrigin, async (req, res) => {
   try {
     if (runningCrawlers.size > 0) {
@@ -405,6 +574,7 @@ app.get('/api/admin/sessions', requireAdmin, (req, res) => {
   const currentAdminSession = getAdminSession(req, false);
   const sessions = [
     ...[...adminSessions.values()].map(session => serializeSession(session, 'Administrator', currentAdminSession?.id)),
+    ...[...auditorSessions.values()].map(session => serializeSession(session, `Auditor${session.username ? ` (${session.username})` : ''}`, currentAdminSession?.id)),
     ...[...dashboardSessions.values()].map(session => serializeSession(session, 'Dashboard', currentAdminSession?.id))
   ].sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime());
   res.setHeader('Cache-Control', 'no-store');
@@ -422,6 +592,15 @@ app.post('/api/admin/sessions/:sessionId/revoke', requireAdmin, requireSameOrigi
     auditSecurityEvent(req, 'session.revoked', 'success', { sessionType: 'Administrator', sessionIdSuffix: sessionId.slice(-4) }, { adminSession: currentAdminSession });
     return res.json({ success: true, type: 'Administrator' });
   }
+  const auditorSession = auditorSessions.get(sessionId);
+  if (auditorSession) {
+    auditorSession.revokedAt = Date.now();
+    for (const [dashboardId, dashboard] of dashboardSessions) {
+      if (dashboard.ownerRole === 'Auditor' && dashboard.ownerSessionId === auditorSession.id) revokeDashboardSession(dashboardId);
+    }
+    auditSecurityEvent(req, 'session.revoked', 'success', { sessionType: 'Auditor', sessionIdSuffix: sessionId.slice(-4) }, { adminSession: currentAdminSession });
+    return res.json({ success: true, type: 'Auditor' });
+  }
   if (revokeDashboardSession(sessionId)) {
     auditSecurityEvent(req, 'session.revoked', 'success', { sessionType: 'Dashboard', sessionIdSuffix: sessionId.slice(-4) }, { adminSession: currentAdminSession });
     return res.json({ success: true, type: 'Dashboard' });
@@ -434,11 +613,13 @@ function getRequestedDashboardSessionId(req) {
   return /^[a-zA-Z0-9_-]{8,128}$/.test(candidate) ? candidate : null;
 }
 
-function createDashboardSession(req, ownerAdminSessionId) {
+function createDashboardSession(req, principal) {
   const now = Date.now();
   const session = {
     id: randomUUID(),
-    ownerAdminSessionId,
+    ownerRole: principal.role,
+    ownerSessionId: principal.id,
+    ownerUserId: principal.userId || null,
     createdAt: now,
     lastSeenAt: now,
     ip: getClientIp(req),
@@ -456,9 +637,9 @@ function requireDashboardSession(req, res, next) {
   if (!existing || existing.revokedAt) {
     return res.status(403).json({ error: 'This dashboard session has been revoked by an administrator.' });
   }
-  const adminSession = getAdminSession(req, false);
-  if (!adminSession || existing.ownerAdminSessionId !== adminSession.id) {
-    return res.status(403).json({ error: 'This dashboard session belongs to a different administrator session.' });
+  const principal = req.dashboardPrincipal || getDashboardPrincipal(req, false);
+  if (!principal || existing.ownerRole !== principal.role || existing.ownerSessionId !== principal.id) {
+    return res.status(403).json({ error: 'This dashboard session belongs to a different signed-in account.' });
   }
   existing.lastSeenAt = Date.now();
   req.dashboardSession = existing;
@@ -541,30 +722,30 @@ function getCrawlCapacity() {
 }
 
 // Dashboard IDs are created by the server, retained in one browser tab, and
-// bound to the signed-in administrator session. They are not accepted simply
+// bound to the signed-in account session. They are not accepted simply
 // because a client supplied a UUID.
-app.post('/api/crawler/session', requireAdmin, requireSameOrigin, (req, res) => {
+app.post('/api/crawler/session', requireDashboardUser, requireSameOrigin, (req, res) => {
   pruneSessionRecords();
-  const adminSession = getAdminSession(req, false);
+  const principal = req.dashboardPrincipal;
   const requestedId = getRequestedDashboardSessionId(req);
   if (requestedId) {
     const existing = dashboardSessions.get(requestedId);
     if (existing?.revokedAt) return res.status(403).json({ error: 'This dashboard session has been revoked by an administrator.' });
-    if (existing && existing.ownerAdminSessionId !== adminSession?.id) {
-      return res.status(403).json({ error: 'This dashboard session belongs to a different administrator session.' });
+    if (existing && (existing.ownerRole !== principal?.role || existing.ownerSessionId !== principal?.id)) {
+      return res.status(403).json({ error: 'This dashboard session belongs to a different signed-in account.' });
     }
     if (existing) {
       existing.lastSeenAt = Date.now();
       return res.json({ sessionId: existing.id, resumed: true });
     }
   }
-  const created = createDashboardSession(req, adminSession?.id);
-  auditSecurityEvent(req, 'dashboard.session.created', 'success', {}, { adminSession, dashboardSession: created });
+  const created = createDashboardSession(req, principal);
+  auditSecurityEvent(req, 'dashboard.session.created', 'success', { accountType: principal?.role }, { adminSession: principal?.role === 'Administrator' ? principal.session : null, dashboardSession: created });
   return res.status(201).json({ sessionId: created.id, resumed: false });
 });
 
-app.use('/api/crawler', requireAdmin, requireDashboardSession, requireSameOrigin);
-app.use('/api/export', requireAdmin, requireDashboardSession);
+app.use('/api/crawler', requireDashboardUser, requireDashboardSession, requireSameOrigin);
+app.use('/api/export', requireDashboardUser, requireDashboardSession);
 
 function broadcastSSE(sessionId, eventType, data) {
   const record = crawlerSessions.get(sessionId);
@@ -607,8 +788,8 @@ app.get('/api/crawler/stream', (req, res) => {
   // well as broken connections. Re-check authentication on long-lived streams.
   const heartbeat = setInterval(() => {
     const session = dashboardSessions.get(sessionId);
-    const admin = getAdminSession(req, false);
-    if (!session || session.revokedAt || !admin || session.ownerAdminSessionId !== admin.id) {
+    const principal = getDashboardPrincipal(req, false);
+    if (!session || session.revokedAt || !principal || session.ownerRole !== principal.role || session.ownerSessionId !== principal.id) {
       res.write(`event: revoked\ndata: ${JSON.stringify({ message: 'Your dashboard session is no longer active. Please sign in again.' })}\n\n`);
       res.end();
       return;
