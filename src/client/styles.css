@@ -37,6 +37,7 @@ main { max-width: 1540px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 44px) 4
 .topbar-action:hover { color: #fff; }
 .topbar-action:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
 .copy-content-button { margin-left: auto; }
+.page-data-filters { margin: 14px 0; }
 .app-recovery { max-width: 640px; margin: 72px auto; padding: 32px; }
 .app-recovery h1 { margin: 0; color: #18233b; font-size: 1.35rem; }
 .app-recovery p:not(.eyebrow) { color: #52637d; line-height: 1.55; }

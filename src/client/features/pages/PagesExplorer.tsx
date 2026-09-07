@@ -38,16 +38,15 @@ function countLabel(tab: PageTab) {
 }
 function tabValueLabel(tab: PageTab) { return TABS.find(item => item.value === tab)?.label || 'Value'; }
 
-export function PagesExplorer({ pages, onInspectPage }: { pages: CrawlPage[]; onInspectPage: (page: CrawlPage, section: 'overview' | 'content') => void }) {
+export function PagesExplorer({ pages, sharedSearch, onInspectPage }: { pages: CrawlPage[]; sharedSearch: string; onInspectPage: (page: CrawlPage, section: 'overview' | 'content') => void }) {
   const [tab, setTab] = useState<PageTab>('all');
   const [filter, setFilter] = useState<PageFilter>('all');
-  const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'index', direction: 'asc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const tabCounts = useMemo(() => Object.fromEntries(TABS.map(({ value }) => [value, value === 'all' ? pages.length : pages.filter(item => Boolean(valueFor(item, value))).length])) as Record<PageTab, number>, [pages]);
   const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = sharedSearch.trim().toLowerCase();
     const matches = pages.map((item, index) => ({ page: item, index, value: valueFor(item, tab) })).filter(item => {
       const searchable = tab === 'all'
         ? `${item.page.url} ${item.page.title || ''} ${item.page.metaDescription || ''} ${item.page.statusCode || ''}`
@@ -75,7 +74,7 @@ export function PagesExplorer({ pages, onInspectPage }: { pages: CrawlPage[]; on
       const comparison = typeof a === 'string' && typeof b === 'string' ? a.localeCompare(b) : Number(a) - Number(b);
       return sort.direction === 'asc' ? comparison : -comparison;
     });
-  }, [pages, tab, filter, search, sort]);
+  }, [pages, tab, filter, sharedSearch, sort]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const rows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -90,7 +89,7 @@ export function PagesExplorer({ pages, onInspectPage }: { pages: CrawlPage[]; on
     : [['all', 'All with data'], ['200', '200 OK'], ['errors', 'Errors']];
   return <>
     <nav className="page-data-tabs" aria-label="On-page data categories">{TABS.map(item => <button key={item.value} className={tab === item.value ? 'active' : ''} onClick={() => changeTab(item.value)}>{item.label} <span>{tabCounts[item.value]}</span></button>)}</nav>
-    <div className="toolbar page-data-toolbar"><input value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder={tab === 'all' ? 'Search URLs, titles, descriptions or status codes…' : `Search URLs or ${tabValueLabel(tab).toLowerCase()}…`} />{filters.map(([value, label]) => <button key={value} className={filter === value ? 'pill active' : 'pill'} onClick={() => changeFilter(value)}>{label}</button>)}</div>
+    <div className="sub-tabs page-data-filters" aria-label="Page filters">{filters.map(([value, label]) => <button key={value} className={filter === value ? 'pill active' : 'pill'} onClick={() => changeFilter(value)}>{label}</button>)}</div>
     <div className="table-wrap pages-table-wrap">
       <table className={tab === 'all' ? 'pages-table pages-table-all' : 'pages-table pages-table-data'} aria-label={tab === 'all' ? 'All audited pages' : `Pages with ${tabValueLabel(tab).toLowerCase()}`}>
         <colgroup>
