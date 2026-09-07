@@ -43,7 +43,9 @@ function formatDuration(startTime?: number, endTime?: number | null) {
   if (!startTime || !endTime) return '';
   const seconds = Math.max(0, Math.round((endTime - startTime) / 1000));
   if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${seconds % 60}s`;
 }
 
 function afterNextPaint() {
@@ -182,6 +184,7 @@ export default function App() {
   const [restoringAudit, setRestoringAudit] = useState<{ pageCount: number; expectedPages: number | null; stage: 'restoring' | 'rendering' } | null>(null);
   const [commandPending, setCommandPending] = useState<'start' | 'pause' | 'resume' | 'stop' | 'reset' | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [elapsedClock, setElapsedClock] = useState(() => Date.now());
   const completionNotificationEligible = useRef(false);
   const notifiedCompletion = useRef<number | null>(null);
   const running = crawler.state === 'running' || crawler.state === 'paused' || crawler.state === 'stopping';
@@ -191,6 +194,9 @@ export default function App() {
   const crawlSlotLabel = availableCrawlSlots === undefined
     ? 'Checking crawl capacity…'
     : `${availableCrawlSlots} crawl slot${availableCrawlSlots === 1 ? '' : 's'} free`;
+  const crawlElapsed = crawler.stats.startTime
+    ? formatDuration(crawler.stats.startTime, crawler.state === 'completed' ? crawler.stats.endTime : elapsedClock)
+    : crawler.state === 'running' ? 'Starting…' : '—';
   useEffect(() => {
     let active = true;
     void fetch('/api/admin/session', { cache: 'no-store' })
@@ -201,6 +207,12 @@ export default function App() {
       .catch(() => { if (active) setIsAdministrator(false); });
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    if (!running) return;
+    setElapsedClock(Date.now());
+    const timer = window.setInterval(() => setElapsedClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
   useEffect(() => {
     const completedAt = crawler.stats.endTime;
     const pageCount = crawler.stats.pagesCrawled || 0;
@@ -314,6 +326,7 @@ export default function App() {
         <Stat label="Discovered links" value={(crawler.stats.internalLinksCount || 0) + (crawler.stats.externalLinksCount || 0)} detail={`${crawler.stats.externalLinksCount || 0} external`} />
         <Stat label="Content area coverage" value={`${crawler.pages.length ? Math.round((contentPages / crawler.pages.length) * 100) : 0}%`} detail={`${contentPages} pages verified`} />
         <Stat label="Errors & exclusions" value={errors} detail={crawler.engine?.mode === 'http' ? 'Direct DOM engine' : 'Browser-rendered crawl'} />
+        <Stat label="Elapsed time" value={crawlElapsed} detail={running ? 'Live crawl duration' : crawler.state === 'completed' ? 'Final crawl duration' : 'Starts when the crawl begins'} />
       </section>
       <section className="card explorer">
         <div className="explorer-head"><div><p className="eyebrow">{explorerView === 'pages' ? 'Audited pages' : explorerView === 'links' ? 'Discovered links & anchors' : explorerView === 'resources' ? 'Resources & assets' : explorerView === 'issues' ? 'SEO issues' : 'Saved crawl history'}</p><h2>{explorerView === 'pages' ? `${crawler.pages.length.toLocaleString()} page${crawler.pages.length === 1 ? '' : 's'} collected` : explorerView === 'links' ? `${crawler.links.length.toLocaleString()} link${crawler.links.length === 1 ? '' : 's'} collected` : explorerView === 'resources' ? 'Embedded resource inventory' : explorerView === 'issues' ? `${issueCount.toLocaleString()} issue${issueCount === 1 ? '' : 's'} identified` : 'Crawls retained in MySQL'}</h2></div><div className="export-wrap"><button className="secondary" onClick={() => setExportOpen(open => !open)}>Export ▾</button>{exportOpen && <div className="export-menu">{[
