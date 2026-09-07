@@ -89,7 +89,7 @@ export function PagesExplorer({ pages, sharedSearch, onInspectPage }: { pages: C
     : [['all', 'All with data'], ['200', '200 OK'], ['errors', 'Errors']];
   return <>
     <nav className="sub-tabs page-data-categories" aria-label="On-page data categories">{TABS.map(item => <button key={item.value} className={tab === item.value ? 'pill active' : 'pill'} onClick={() => changeTab(item.value)}>{item.label} ({tabCounts[item.value]})</button>)}</nav>
-    <div className="sub-tabs page-data-filters" aria-label="Page filters">{filters.map(([value, label]) => <button key={value} className={filter === value ? 'pill active' : 'pill'} onClick={() => changeFilter(value)}>{label}</button>)}</div>
+    <div className="page-filter-row"><label>Filter results<select value={filter} onChange={event => changeFilter(event.target.value as PageFilter)}>{filters.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
     <div className="table-wrap pages-table-wrap">
       <table className={tab === 'all' ? 'pages-table pages-table-all' : 'pages-table pages-table-data'} aria-label={tab === 'all' ? 'All audited pages' : `Pages with ${tabValueLabel(tab).toLowerCase()}`}>
         <colgroup>
