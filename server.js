@@ -296,8 +296,21 @@ function adminCookieOptions(req) {
   };
 }
 
+function clearAdminCookieOptions(req) {
+  return {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: isSecureRequest(req),
+    path: '/'
+  };
+}
+
 function auditorCookieOptions(req) {
   return { ...adminCookieOptions(req), maxAge: ADMIN_SESSION_TTL_MS };
+}
+
+function clearAuditorCookieOptions(req) {
+  return { ...clearAdminCookieOptions(req) };
 }
 
 function requireAdmin(req, res, next) {
@@ -466,7 +479,7 @@ app.post('/api/admin/login', requireSameOrigin, async (req, res) => {
     // cookie here prevents a test sign-in from silently retaining owner access.
     const existingAdmin = getAdminSession(req, false);
     if (existingAdmin) existingAdmin.endedAt = Date.now();
-    res.clearCookie('omnicrawl_admin', adminCookieOptions(req));
+    res.clearCookie('omnicrawl_admin', clearAdminCookieOptions(req));
     const created = createAuditorSession(req, auditor);
     await crawlStorage.markAuditorLoggedIn(auditor.id).catch(() => {});
     auditSecurityEvent(req, 'auditor.login', 'success', { username: auditor.username });
@@ -475,7 +488,7 @@ app.post('/api/admin/login', requireSameOrigin, async (req, res) => {
   }
   const existingAuditor = getAuditorSession(req, false);
   if (existingAuditor) existingAuditor.endedAt = Date.now();
-  res.clearCookie('omnicrawl_auditor', auditorCookieOptions(req));
+  res.clearCookie('omnicrawl_auditor', clearAuditorCookieOptions(req));
   const created = createAdminSession(req);
   auditSecurityEvent(req, 'admin.login', 'success', {}, { adminSession: created.session });
   res.cookie('omnicrawl_admin', created.token, adminCookieOptions(req));
@@ -486,7 +499,7 @@ app.post('/api/admin/logout', requireAdmin, requireSameOrigin, (req, res) => {
   const session = getAdminSession(req, false);
   if (session) session.endedAt = Date.now();
   auditSecurityEvent(req, 'admin.logout', 'success', {}, { adminSession: session });
-  res.clearCookie('omnicrawl_admin', adminCookieOptions(req));
+  res.clearCookie('omnicrawl_admin', clearAdminCookieOptions(req));
   res.json({ success: true });
 });
 
@@ -502,8 +515,8 @@ app.post('/api/access/logout', requireDashboardUser, requireSameOrigin, (req, re
   auditSecurityEvent(req, 'access.logout', 'success', { accountType: principal.role, ...(principal.username ? { username: principal.username } : {}) }, {
     adminSession: principal.role === 'Administrator' ? principal.session : null
   });
-  if (principal.role === 'Administrator') res.clearCookie('omnicrawl_admin', adminCookieOptions(req));
-  else res.clearCookie('omnicrawl_auditor', auditorCookieOptions(req));
+  if (principal.role === 'Administrator') res.clearCookie('omnicrawl_admin', clearAdminCookieOptions(req));
+  else res.clearCookie('omnicrawl_auditor', clearAuditorCookieOptions(req));
   res.json({ success: true });
 });
 
