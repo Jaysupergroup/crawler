@@ -520,7 +520,7 @@ app.get('/api/admin/database-overview', requireAdmin, async (req, res) => {
 app.get('/api/admin/security-events', requireAdmin, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
-    res.json({ events: await crawlStorage.listSecurityEvents(100), storage: crawlStorage.getStatus() });
+    res.json({ events: await crawlStorage.listSecurityEvents(10), storage: crawlStorage.getStatus() });
   } catch (error) {
     res.status(503).json({ error: 'Could not load security activity.', storage: crawlStorage.getStatus() });
   }
