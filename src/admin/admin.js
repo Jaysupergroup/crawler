@@ -19,6 +19,9 @@ const auditorPassword = document.getElementById('auditorPassword');
 const refreshAuditors = document.getElementById('refreshAuditors');
 const auditorsMessage = document.getElementById('auditorsMessage');
 const auditorsTable = document.getElementById('auditorsTable');
+const refreshCrawls = document.getElementById('refreshCrawls');
+const crawlsMessage = document.getElementById('crawlsMessage');
+const crawlsTable = document.getElementById('crawlsTable');
 const formatNumber = value => Number(value || 0).toLocaleString();
 const formatBytes = value => {
   const bytes = Number(value || 0);
@@ -64,6 +67,22 @@ async function loadOverview() {
     overviewMessage.textContent = error.message;
   } finally {
     refreshOverview.disabled = false;
+  }
+}
+
+async function loadCrawls() {
+  refreshCrawls.disabled = true;
+  crawlsMessage.textContent = 'Loading saved crawls…';
+  try {
+    const response = await fetch('/api/admin/crawl-history?limit=50', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not load saved crawls.');
+    crawlsTable.innerHTML = data.crawls.map(crawl => `<tr><td class="crawl-target" title="${escapeHtml(crawl.seedUrl)}">${escapeHtml(crawl.seedUrl)}</td><td><span class="session-status ${escapeHtml(String(crawl.status || 'unknown').toLowerCase())}">${escapeHtml(crawl.status || 'Unknown')}</span></td><td>${formatNumber(crawl.stats?.pagesCrawled)}</td><td>${escapeHtml(formatDate(crawl.startedAt || crawl.createdAt))}</td><td>${escapeHtml(formatDate(crawl.completedAt))}</td><td><button class="delete-crawl" type="button" data-crawl-id="${escapeHtml(crawl.id)}" data-crawl-target="${escapeHtml(crawl.seedUrl)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No saved crawls are available.</td></tr>';
+    crawlsMessage.textContent = `${data.crawls.length} saved crawl${data.crawls.length === 1 ? '' : 's'} loaded.`;
+  } catch (error) {
+    crawlsMessage.textContent = error.message;
+  } finally {
+    refreshCrawls.disabled = false;
   }
 }
 
@@ -147,7 +166,7 @@ clear.addEventListener('click', async () => {
     if (!response.ok) throw new Error(data.error || 'Could not clear history.');
     message.textContent = `Deleted ${data.deleted.crawls} crawl(s), ${data.deleted.pages} page(s), ${data.deleted.links} link(s), and ${data.deleted.resources} resource(s).`;
     confirmation.value = '';
-    await loadOverview();
+    await Promise.all([loadOverview(), loadCrawls()]);
   } catch (error) {
     message.textContent = error.message;
   } finally {
@@ -160,6 +179,7 @@ refreshEvents.addEventListener('click', () => void loadSecurityEvents());
 previousEvents.addEventListener('click', () => void loadSecurityEvents(securityEventsPage - 1));
 nextEvents.addEventListener('click', () => void loadSecurityEvents(securityEventsPage + 1));
 refreshAuditors.addEventListener('click', loadAuditors);
+refreshCrawls.addEventListener('click', loadCrawls);
 createAuditorForm.addEventListener('submit', async event => {
   event.preventDefault();
   const submit = createAuditorForm.querySelector('button[type="submit"]');
@@ -207,7 +227,24 @@ sessionsTable.addEventListener('click', async event => {
     button.disabled = false;
   }
 });
+crawlsTable.addEventListener('click', async event => {
+  const button = event.target.closest('[data-crawl-id]');
+  if (!button || !window.confirm(`Permanently delete this saved crawl and all its audit data?\n\n${button.dataset.crawlTarget}`)) return;
+  button.disabled = true;
+  crawlsMessage.textContent = 'Deleting saved crawl…';
+  try {
+    const response = await fetch(`/api/admin/crawl-history/${encodeURIComponent(button.dataset.crawlId)}/delete`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not delete the saved crawl.');
+    crawlsMessage.textContent = `Deleted 1 crawl, ${formatNumber(data.deleted.pages)} page(s), ${formatNumber(data.deleted.links)} link(s), and ${formatNumber(data.deleted.resources)} resource(s).`;
+    await Promise.all([loadCrawls(), loadOverview()]);
+  } catch (error) {
+    crawlsMessage.textContent = error.message;
+    button.disabled = false;
+  }
+});
 loadOverview();
+loadCrawls();
 loadSessions();
 loadSecurityEvents();
 loadAuditors();

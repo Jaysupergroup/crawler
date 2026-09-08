@@ -468,6 +468,34 @@ export class CrawlStorage {
     }
   }
 
+  async deleteCrawl(id) {
+    if (!(await this.initialize()) || !this.pool) {
+      throw new Error('Persistent crawl history is not connected.');
+    }
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[crawl]] = await connection.execute('SELECT id FROM crawl_runs WHERE id = ? FOR UPDATE', [id]);
+      if (!crawl) {
+        await connection.rollback();
+        return null;
+      }
+      const [[linkCount]] = await connection.execute('SELECT COUNT(*) AS total FROM crawl_links WHERE crawl_id = ?', [id]);
+      const [[pageCount]] = await connection.execute('SELECT COUNT(*) AS total FROM crawl_pages WHERE crawl_id = ?', [id]);
+      const [[resourceCount]] = await connection.execute('SELECT COALESCE(SUM(JSON_LENGTH(resources_json)), 0) AS total FROM crawl_pages WHERE crawl_id = ?', [id]);
+      await connection.execute('DELETE FROM crawl_links WHERE crawl_id = ?', [id]);
+      await connection.execute('DELETE FROM crawl_pages WHERE crawl_id = ?', [id]);
+      await connection.execute('DELETE FROM crawl_runs WHERE id = ?', [id]);
+      await connection.commit();
+      return { crawls: 1, pages: Number(pageCount.total || 0), links: Number(linkCount.total || 0), resources: Number(resourceCount.total || 0) };
+    } catch (error) {
+      await connection.rollback().catch(() => {});
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
   async recordSecurityEvent({ eventType, outcome = 'success', adminSessionId = null, dashboardSessionId = null, ipAddress = null, userAgent = null, metadata = null }) {
     if (!(await this.initialize()) || !this.pool) return false;
     await this.pool.execute(

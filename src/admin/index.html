@@ -48,6 +48,12 @@
       </div>
     </section>
     <section class="panel overview">
+      <div class="section-head"><h2>Saved crawls</h2><button id="refreshCrawls" class="secondary" type="button">Refresh</button></div>
+      <p id="crawlsMessage" role="status">Loading saved crawls…</p>
+      <p class="muted">Delete a single saved audit and all of its stored pages, links, resources and extracted content. This cannot be undone.</p>
+      <div class="table-wrap"><table><thead><tr><th>Target</th><th>Status</th><th>Pages</th><th>Started</th><th>Completed</th><th></th></tr></thead><tbody id="crawlsTable"><tr><td colspan="6" class="muted">Loading saved crawls…</td></tr></tbody></table></div>
+    </section>
+    <section class="panel overview">
       <div class="section-head"><h2>Sessions &amp; devices</h2><button id="refreshSessions" class="secondary" type="button">Refresh</button></div>
       <p id="sessionsMessage" role="status">Loading active and recent sessions…</p>
       <p class="muted">Administrator sign-ins and dashboard tabs are shown for seven days in server memory. Revoking a dashboard session stops any crawl it owns and disconnects that tab.</p>

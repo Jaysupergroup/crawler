@@ -586,6 +586,38 @@ app.post('/api/admin/auditors/:userId/disable', requireAdmin, requireSameOrigin,
   }
 });
 
+app.get('/api/admin/crawl-history', requireAdmin, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const crawls = await crawlStorage.listCrawls(req.query.limit || 50);
+    res.json({ crawls, storage: crawlStorage.getStatus() });
+  } catch (error) {
+    res.status(503).json({ error: error.message || 'Could not load saved crawl history.', storage: crawlStorage.getStatus() });
+  }
+});
+
+app.post('/api/admin/crawl-history/:crawlId/delete', requireAdmin, requireSameOrigin, async (req, res) => {
+  const crawlId = req.params.crawlId;
+  if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid crawl identifier.' });
+  const activeCrawl = [...crawlerSessions.values()].some(session => session.crawlId === crawlId && session.crawler?.isRunning);
+  if (activeCrawl) {
+    auditSecurityEvent(req, 'crawl.history.delete', 'denied', { crawlIdSuffix: crawlId.slice(-4), reason: 'active-crawl' });
+    return res.status(409).json({ error: 'Stop and allow this crawl to finish saving before deleting it.' });
+  }
+  try {
+    const deleted = await crawlStorage.deleteCrawl(crawlId);
+    if (!deleted) {
+      auditSecurityEvent(req, 'crawl.history.delete', 'denied', { crawlIdSuffix: crawlId.slice(-4), reason: 'not-found' });
+      return res.status(404).json({ error: 'Saved crawl not found or already deleted.' });
+    }
+    auditSecurityEvent(req, 'crawl.history.delete', 'success', { crawlIdSuffix: crawlId.slice(-4), deleted });
+    return res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('Failed to delete saved crawl:', error.message);
+    return res.status(500).json({ error: 'Could not delete the saved crawl. Please try again.' });
+  }
+});
+
 app.post('/api/admin/crawl-history/clear', requireAdmin, requireSameOrigin, async (req, res) => {
   try {
     if (runningCrawlers.size > 0) {
