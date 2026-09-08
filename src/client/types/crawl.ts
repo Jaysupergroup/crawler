@@ -189,3 +189,38 @@ export interface CrawlHistoryDetail {
   crawl: CrawlHistoryRecord & { config?: Record<string, unknown> };
   results: CrawlPage[];
 }
+
+export type CrawlComparisonChangeType = 'new' | 'missing' | 'changed';
+
+export interface CrawlComparisonPage {
+  statusCode?: number | null;
+  title?: string | null;
+  metaDescription?: string | null;
+  canonical?: string | null;
+  metaRobots?: string | null;
+  h1?: string | null;
+  totalWords?: number | null;
+  internalLinksCount?: number | null;
+  externalLinksCount?: number | null;
+}
+
+export interface CrawlComparisonChange {
+  field: string;
+  previous: string | number | null;
+  current: string | number | null;
+}
+
+export interface CrawlComparisonRow {
+  url: string;
+  type: CrawlComparisonChangeType;
+  previous?: CrawlComparisonPage;
+  current?: CrawlComparisonPage;
+  changes: CrawlComparisonChange[];
+}
+
+export interface CrawlComparison {
+  previous: CrawlHistoryRecord;
+  current: CrawlHistoryRecord;
+  summary: { previousPages: number; currentPages: number; new: number; missing: number; changed: number; unchanged: number };
+  rows: CrawlComparisonRow[];
+}

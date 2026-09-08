@@ -1,4 +1,4 @@
-import type { CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLink, CrawlHistoryDetail, CrawlHistoryRecord, HtmlComparisonCapture } from '../types/crawl';
+import type { CrawlComparison, CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLink, CrawlHistoryDetail, CrawlHistoryRecord, HtmlComparisonCapture } from '../types/crawl';
 
 // The browser retains only a server-issued opaque ID. The API verifies that ID
 // belongs to the currently signed-in account before serving crawl data.
@@ -96,6 +96,7 @@ export const crawlerClient = {
   links: () => request<{ links: CrawledLink[] }>('/api/crawler/links'),
   pageHtml: (url: string) => request<HtmlComparisonCapture>(`/api/crawler/page-html?url=${encodeURIComponent(url)}`),
   history: () => request<{ crawls: CrawlHistoryRecord[]; storage: { configured?: boolean; connected?: boolean } }>('/api/crawler/history'),
+  compareHistory: (previousId: string, currentId: string) => request<CrawlComparison>(`/api/crawler/history/compare?previousId=${encodeURIComponent(previousId)}&currentId=${encodeURIComponent(currentId)}`, { signal: AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS) }),
   historyDetail: (crawlId: string) => request<CrawlHistoryDetail>(`/api/crawler/history/${encodeURIComponent(crawlId)}`),
   restoreHistory: (crawlId: string) => request<{ success: boolean; restoredPages: number; crawl: { seedUrl: string; config?: Partial<CrawlConfig> } }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/restore`, { method: 'POST', body: '{}' }),
   start: (config: CrawlConfig) => request<{ success: boolean }>('/api/crawler/start', { method: 'POST', body: JSON.stringify(config) }),

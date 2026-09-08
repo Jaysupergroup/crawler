@@ -444,6 +444,98 @@ export class CrawlStorage {
     };
   }
 
+  async compareCrawls(previousId, currentId) {
+    if (!(await this.initialize()) || !this.pool) {
+      throw new Error('Persistent crawl history is not connected.');
+    }
+    if (previousId === currentId) throw new Error('Choose two different saved crawls to compare.');
+    const [crawlRows] = await this.pool.execute(
+      `SELECT id, seed_url, status, stats_json, engine_json, created_at, started_at, completed_at
+       FROM crawl_runs WHERE id IN (?, ?)`,
+      [previousId, currentId]
+    );
+    const crawls = new Map(crawlRows.map(row => [row.id, {
+      id: row.id, seedUrl: row.seed_url, status: row.status,
+      stats: parseJson(row.stats_json, null), engine: parseJson(row.engine_json, null),
+      createdAt: row.created_at, startedAt: row.started_at, completedAt: row.completed_at
+    }]));
+    const previous = crawls.get(previousId);
+    const current = crawls.get(currentId);
+    if (!previous || !current) throw new Error('One or both saved crawls could not be found.');
+
+    // Keep the comparison payload light enough for large historical crawls:
+    // the database calculates a content fingerprint, rather than returning
+    // every page's LONGTEXT content to the browser.
+    const [pageRows] = await this.pool.execute(
+      `SELECT crawl_id AS crawlId, url, status_code AS statusCode, title,
+        meta_description AS metaDescription, canonical, meta_robots AS metaRobots,
+        h1, total_words AS totalWords, internal_links_count AS internalLinksCount,
+        external_links_count AS externalLinksCount,
+        SHA2(COALESCE(NULLIF(custom_text, ''), NULLIF(full_page_text, ''), ''), 256) AS contentHash
+       FROM crawl_pages WHERE crawl_id IN (?, ?)
+       ORDER BY crawl_id, page_number ASC`,
+      [previousId, currentId]
+    );
+    const previousPages = new Map();
+    const currentPages = new Map();
+    for (const row of pageRows) {
+      const target = row.crawlId === previousId ? previousPages : currentPages;
+      // A crawl normally has one result per canonical URL. Retaining the
+      // first row also makes comparison deterministic for older duplicate data.
+      if (!target.has(row.url)) target.set(row.url, row);
+    }
+
+    const fields = [
+      ['Status code', 'statusCode'], ['Page title', 'title'], ['Meta description', 'metaDescription'],
+      ['Canonical', 'canonical'], ['Meta robots', 'metaRobots'], ['H1', 'h1'],
+      ['Word count', 'totalWords'], ['Internal links', 'internalLinksCount'], ['External links', 'externalLinksCount']
+    ];
+    const comparable = value => value === null || value === undefined ? '' : String(value);
+    const snapshot = page => ({
+      statusCode: page.statusCode, title: page.title, metaDescription: page.metaDescription,
+      canonical: page.canonical, metaRobots: page.metaRobots, h1: page.h1,
+      totalWords: page.totalWords, internalLinksCount: page.internalLinksCount, externalLinksCount: page.externalLinksCount
+    });
+    const rows = [];
+    let added = 0;
+    let missing = 0;
+    let changed = 0;
+    let unchanged = 0;
+    const urls = new Set([...previousPages.keys(), ...currentPages.keys()]);
+    for (const url of urls) {
+      const before = previousPages.get(url);
+      const after = currentPages.get(url);
+      if (!before) {
+        added++;
+        rows.push({ url, type: 'new', current: snapshot(after), changes: [] });
+        continue;
+      }
+      if (!after) {
+        missing++;
+        rows.push({ url, type: 'missing', previous: snapshot(before), changes: [] });
+        continue;
+      }
+      const changes = fields
+        .filter(([, key]) => comparable(before[key]) !== comparable(after[key]))
+        .map(([field, key]) => ({ field, previous: before[key] ?? null, current: after[key] ?? null }));
+      if (before.contentHash !== after.contentHash) changes.push({ field: 'Rendered content', previous: 'Changed', current: 'Changed' });
+      if (changes.length) {
+        changed++;
+        rows.push({ url, type: 'changed', previous: snapshot(before), current: snapshot(after), changes });
+      } else {
+        unchanged++;
+      }
+    }
+    const typeOrder = { changed: 0, new: 1, missing: 2 };
+    rows.sort((a, b) => typeOrder[a.type] - typeOrder[b.type] || a.url.localeCompare(b.url));
+    return {
+      previous,
+      current,
+      summary: { previousPages: previousPages.size, currentPages: currentPages.size, new: added, missing, changed, unchanged },
+      rows
+    };
+  }
+
   async clearAllCrawls() {
     if (!(await this.initialize()) || !this.pool) {
       throw new Error('Persistent crawl history is not connected.');
