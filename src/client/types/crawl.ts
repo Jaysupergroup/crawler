@@ -131,6 +131,7 @@ export interface CrawledImage {
 }
 
 export interface CrawlPage {
+  id?: number;
   url: string;
   statusCode?: number | null;
   title?: string;
@@ -151,6 +152,7 @@ export interface CrawlPage {
   externalLinksCount?: number;
   customLinksCount?: number;
   fullPageText?: string;
+  hasStoredContent?: boolean;
   error?: string;
   links?: CrawledLink[];
   resources?: CrawledResource[];
@@ -172,6 +174,13 @@ export interface CrawlerSnapshot extends CrawlerStatus {
   revision: number;
   results: CrawlPage[];
   links: CrawledLink[];
+  historyAudit?: HistoryAudit | null;
+}
+
+export interface HistoryAudit {
+  crawlId: string;
+  totalPages: number;
+  loadedPages: number;
 }
 
 export interface CrawlHistoryRecord {
@@ -188,6 +197,23 @@ export interface CrawlHistoryRecord {
 export interface CrawlHistoryDetail {
   crawl: CrawlHistoryRecord & { config?: Record<string, unknown> };
   results: CrawlPage[];
+}
+
+export interface CrawlHistoryPageWindow {
+  crawl: CrawlHistoryRecord & { config?: Partial<CrawlConfig> };
+  results: CrawlPage[];
+  total: number;
+  offset: number;
+  limit: number;
+  counts: Record<'all' | 'title' | 'description' | 'keywords' | 'h1' | 'h2' | 'content', number>;
+}
+
+export interface CrawlHistoryLinkWindow {
+  links: CrawledLink[];
+  total: number;
+  offset: number;
+  limit: number;
+  counts: Record<'all' | 'internal' | 'external' | 'redirects' | 'in-content' | '200' | 'errors' | 'nofollow', number>;
 }
 
 export type CrawlComparisonChangeType = 'new' | 'missing' | 'changed';

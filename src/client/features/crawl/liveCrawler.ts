@@ -1,4 +1,4 @@
-import type { CrawlCapacity, CrawlPage, CrawlState, CrawlStats, CrawledLink, CrawlerSnapshot, EngineStatus } from '../../types/crawl';
+import type { CrawlCapacity, CrawlPage, CrawlState, CrawlStats, CrawledLink, CrawlerSnapshot, EngineStatus, HistoryAudit } from '../../types/crawl';
 
 const emptyStats = (): CrawlStats => ({ pagesCrawled: 0, pagesQueued: 0, internalLinksCount: 0, externalLinksCount: 0, errorsCount: 0, customDetectedCount: 0 });
 const POLL_INTERVAL_MS = 2000;
@@ -12,6 +12,7 @@ interface LiveState {
   links: CrawledLink[];
   engine: EngineStatus | null;
   capacity?: CrawlCapacity;
+  historyAudit: HistoryAudit | null;
   error: string | null;
 }
 
@@ -50,7 +51,7 @@ function deriveState(data: LiveEvent): CrawlState {
 // Transport coordination lives outside React so races, reconnects and buffering
 // can be tested without launching a crawler or relying on real network timing.
 export class LiveCrawler {
-  private value: LiveState = { state: 'ready', stats: emptyStats(), queueLength: 0, pages: [], links: [], engine: null, error: null };
+  private value: LiveState = { state: 'ready', stats: emptyStats(), queueLength: 0, pages: [], links: [], engine: null, historyAudit: null, error: null };
   private listeners = new Set<() => void>();
   private transport: Transport;
   private createStream: (url: string) => Stream;
@@ -164,7 +165,7 @@ export class LiveCrawler {
       this.revision = snapshot.revision;
       this.needsSnapshot = false;
       this.update({ state: deriveState(snapshot), stats: snapshot.stats || emptyStats(), queueLength: snapshot.queueLength || 0,
-        pages: safeList<CrawlPage>(snapshot.results), links: safeList<CrawledLink>(snapshot.links), engine: snapshot.engine || null, capacity: snapshot.capacity });
+        pages: safeList<CrawlPage>(snapshot.results), links: safeList<CrawledLink>(snapshot.links), engine: snapshot.engine || null, capacity: snapshot.capacity, historyAudit: snapshot.historyAudit || null });
     }).catch(error => {
       if (this.active && generation === this.generation && !controller.signal.aborted) {
         this.update({ error: error instanceof Error ? error.message : 'Could not refresh crawl results.' });
@@ -185,7 +186,7 @@ export class LiveCrawler {
       this.revoked = true;
       this.invalidate();
       this.closeStream();
-      this.update({ state: 'ready', pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null, error: data.message || 'This dashboard session was revoked by an administrator.' });
+      this.update({ state: 'ready', pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null, historyAudit: null, error: data.message || 'This dashboard session was revoked by an administrator.' });
       return;
     }
     if (type === 'heartbeat' || type === 'capacity') {
@@ -197,7 +198,7 @@ export class LiveCrawler {
       this.invalidate();
       this.needsSnapshot = false;
       this.revision = data.revision ?? this.revision;
-      this.update({ state: 'ready', pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null, error: null });
+      this.update({ state: 'ready', pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null, historyAudit: null, error: null });
       return;
     }
     if (this.pending) { this.buffered.push({ type, data }); return; }
@@ -206,8 +207,8 @@ export class LiveCrawler {
     if (data.revision !== undefined) this.revision = data.revision;
     if (type === 'status') this.update({ state: deriveState(data), stats: data.stats || emptyStats(), queueLength: data.queueLength || 0, engine: data.engine || null, capacity: data.capacity });
     else if (type === 'pageCrawled' && data.result) {
-      this.update({ pages: [...this.value.pages, data.result], links: [...this.value.links, ...(data.links || [])], stats: data.stats || this.value.stats, queueLength: data.queueLength || 0 });
-    } else if (type === 'started') this.update({ state: 'running', pages: [], links: [], stats: emptyStats(), engine: null, error: null });
+      this.update({ pages: [...this.value.pages, data.result], links: [...this.value.links, ...(data.links || [])], stats: data.stats || this.value.stats, queueLength: data.queueLength || 0, historyAudit: null });
+    } else if (type === 'started') this.update({ state: 'running', pages: [], links: [], stats: emptyStats(), engine: null, historyAudit: null, error: null });
     else if (type === 'paused') this.update({ state: 'paused' });
     else if (type === 'resumed') this.update({ state: 'running' });
     else if (type === 'stopping') this.update({ state: 'stopping', queueLength: 0 });
@@ -226,7 +227,7 @@ export class LiveCrawler {
     this.busy = true;
     this.invalidate();
     this.closeStream();
-    this.update({ error: null, ...(starting ? { state: 'running' as const, pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null } : {}) });
+    this.update({ error: null, ...(starting ? { state: 'running' as const, pages: [], links: [], stats: emptyStats(), queueLength: 0, engine: null, historyAudit: null } : {}) });
     try { return await action(); }
     catch (error) {
       if (this.active) this.update({ error: error instanceof Error ? error.message : 'Crawler request failed.' });

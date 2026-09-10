@@ -444,6 +444,206 @@ export class CrawlStorage {
     };
   }
 
+  /**
+   * Returns one lightweight page window for a saved crawl. Large text, links,
+   * resources and images stay in MySQL until a user explicitly inspects a
+   * page, preventing a historical 5,000-page crawl from becoming one huge
+   * JSON response in the browser.
+   */
+  async getCrawlPageWindow(id, options = {}) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+    const limit = Math.min(250, Math.max(1, Number.parseInt(options.limit, 10) || 50));
+    const tab = ['all', 'title', 'description', 'keywords', 'h1', 'h2', 'content'].includes(options.tab) ? options.tab : 'all';
+    const filter = ['all', '200', 'content', 'missing', 'errors'].includes(options.filter) ? options.filter : 'all';
+    const query = String(options.query || '').trim().slice(0, 200);
+    const direction = options.direction === 'desc' ? 'DESC' : 'ASC';
+    const valueColumns = {
+      all: 'title', title: 'title', description: 'meta_description', keywords: 'meta_keywords',
+      h1: 'h1', h2: 'h2_list', content: 'full_page_text'
+    };
+    const sortColumns = {
+      index: 'page_number', status: 'status_code', url: 'url', value: valueColumns[tab],
+      length: `CHAR_LENGTH(COALESCE(${valueColumns[tab]}, ''))`, content: 'custom_detected',
+      links: '(COALESCE(internal_links_count, 0) + COALESCE(external_links_count, 0))', latency: 'response_time_ms'
+    };
+    const sort = Object.prototype.hasOwnProperty.call(sortColumns, options.sort) ? options.sort : 'index';
+    const where = ['crawl_id = ?'];
+    const values = [id];
+    const hasContent = "COALESCE(NULLIF(custom_text, ''), NULLIF(full_page_text, '')) IS NOT NULL";
+    if (tab === 'title') where.push("COALESCE(title, '') <> ''");
+    if (tab === 'description') where.push("COALESCE(meta_description, '') <> ''");
+    if (tab === 'keywords') where.push("COALESCE(meta_keywords, '') <> ''");
+    if (tab === 'h1') where.push("COALESCE(h1, '') <> ''");
+    if (tab === 'h2') where.push('JSON_LENGTH(COALESCE(h2_list, JSON_ARRAY())) > 0');
+    if (tab === 'content') where.push(hasContent);
+    if (filter === '200') where.push('status_code = 200');
+    if (filter === 'content') where.push('custom_detected = 1');
+    if (filter === 'missing') where.push('custom_detected = 0');
+    if (filter === 'errors') where.push("(COALESCE(status_code, 0) >= 400 OR COALESCE(error_text, '') <> '')");
+    if (query) {
+      where.push("CONCAT_WS(' ', url, title, meta_description, meta_keywords, h1, status_code) LIKE ?");
+      values.push(`%${query}%`);
+    }
+    const whereSql = where.join(' AND ');
+    const [crawlRows] = await this.pool.execute('SELECT id, seed_url, status, config_json, stats_json, engine_json, created_at, started_at, completed_at FROM crawl_runs WHERE id = ?', [id]);
+    if (!crawlRows.length) return null;
+    const [[totalRow]] = await this.pool.execute(`SELECT COUNT(*) AS total FROM crawl_pages WHERE ${whereSql}`, values);
+    const [countRows] = await this.pool.execute(
+      `SELECT COUNT(*) AS allPages,
+        SUM(COALESCE(title, '') <> '') AS titlePages,
+        SUM(COALESCE(meta_description, '') <> '') AS descriptionPages,
+        SUM(COALESCE(meta_keywords, '') <> '') AS keywordPages,
+        SUM(COALESCE(h1, '') <> '') AS h1Pages,
+        SUM(JSON_LENGTH(COALESCE(h2_list, JSON_ARRAY())) > 0) AS h2Pages,
+        SUM(${hasContent}) AS contentPages
+       FROM crawl_pages WHERE crawl_id = ?`,
+      [id]
+    );
+    const [pageRows] = await this.pool.execute(
+      `SELECT page_number, url, depth, source_url, status_code, status_text, response_time_ms,
+        title, meta_description, meta_keywords, canonical, meta_robots, h1, h1_list, h2_list,
+        images_count, total_words, internal_links_count, external_links_count, custom_links_count,
+        custom_detected, custom_selector, custom_detection_method, custom_word_count, custom_headings,
+        render_comparison_json, render_mode, render_error, error_text, crawled_at,
+        ${hasContent} AS has_stored_content
+       FROM crawl_pages WHERE ${whereSql}
+       ORDER BY ${sortColumns[sort]} ${direction}, page_number ASC LIMIT ? OFFSET ?`,
+      [...values, limit, offset]
+    );
+    const crawl = crawlRows[0];
+    const counts = countRows[0] || {};
+    return {
+      crawl: {
+        id: crawl.id, seedUrl: crawl.seed_url, status: crawl.status, config: parseJson(crawl.config_json, {}),
+        stats: parseJson(crawl.stats_json, null), engine: parseJson(crawl.engine_json, null), createdAt: crawl.created_at,
+        startedAt: crawl.started_at, completedAt: crawl.completed_at
+      },
+      offset, limit, total: Number(totalRow.total || 0),
+      counts: {
+        all: Number(counts.allPages || 0), title: Number(counts.titlePages || 0), description: Number(counts.descriptionPages || 0),
+        keywords: Number(counts.keywordPages || 0), h1: Number(counts.h1Pages || 0), h2: Number(counts.h2Pages || 0), content: Number(counts.contentPages || 0)
+      },
+      results: pageRows.map(page => ({
+        id: page.page_number, url: page.url, depth: page.depth, sourceUrl: page.source_url, statusCode: page.status_code,
+        statusText: page.status_text, responseTimeMs: page.response_time_ms, title: page.title, metaDescription: page.meta_description,
+        metaKeywords: page.meta_keywords, canonical: page.canonical, metaRobots: page.meta_robots, h1: page.h1,
+        h1List: parseJson(page.h1_list, []), h2List: parseJson(page.h2_list, []), imagesCount: page.images_count,
+        totalWords: page.total_words, internalLinksCount: page.internal_links_count, externalLinksCount: page.external_links_count,
+        customLinksCount: page.custom_links_count, renderMode: page.render_mode, renderError: page.render_error,
+        error: page.error_text, timestamp: page.crawled_at, hasStoredContent: Boolean(page.has_stored_content),
+        renderComparison: parseJson(page.render_comparison_json, null),
+        customContent: {
+          detected: Boolean(page.custom_detected), selectorUsed: page.custom_selector || '',
+          detectionMethod: page.custom_detection_method || 'none', wordCount: page.custom_word_count || 0,
+          headings: parseJson(page.custom_headings, [])
+        }
+      }))
+    };
+  }
+
+  async getCrawlPage(id, url) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const [pageRows] = await this.pool.execute('SELECT * FROM crawl_pages WHERE crawl_id = ? AND url = ? LIMIT 1', [id, url]);
+    const page = pageRows[0];
+    if (!page) return null;
+    const [linkRows] = await this.pool.execute('SELECT * FROM crawl_links WHERE page_id = ? ORDER BY id ASC', [page.id]);
+    return {
+      id: page.page_number, url: page.url, depth: page.depth, sourceUrl: page.source_url, statusCode: page.status_code,
+      statusText: page.status_text, responseTimeMs: page.response_time_ms, title: page.title, metaDescription: page.meta_description,
+      metaKeywords: page.meta_keywords, canonical: page.canonical, metaRobots: page.meta_robots, h1: page.h1,
+      h1List: parseJson(page.h1_list, []), h2List: parseJson(page.h2_list, []), imagesCount: page.images_count,
+      totalWords: page.total_words, internalLinksCount: page.internal_links_count, externalLinksCount: page.external_links_count,
+      customLinksCount: page.custom_links_count, renderMode: page.render_mode, renderError: page.render_error,
+      error: page.error_text, timestamp: page.crawled_at, fullPageText: page.full_page_text || '',
+      resources: parseJson(page.resources_json, []), images: parseJson(page.images_json, null),
+      renderComparison: parseJson(page.render_comparison_json, null),
+      customContent: {
+        detected: Boolean(page.custom_detected), selectorUsed: page.custom_selector || '',
+        detectionMethod: page.custom_detection_method || 'none', wordCount: page.custom_word_count || 0,
+        headings: parseJson(page.custom_headings, []), fullText: page.custom_text || '', textSnippet: page.custom_text || ''
+      },
+      links: linkRows.map(link => ({
+        rawHref: link.raw_href || '', url: link.target_url || '', anchorText: link.anchor_text || '',
+        linkType: link.link_type || 'Internal', rel: link.rel_value || '', target: link.target_value || '',
+        isNofollow: Boolean(link.is_nofollow), isInsideCustom: Boolean(link.is_inside_content),
+        isValidHttp: Boolean(link.is_valid_http), statusCode: link.status_code, finalStatusCode: link.final_status_code,
+        finalUrl: link.final_url || '', redirectChain: parseJson(link.redirect_chain, [])
+      }))
+    };
+  }
+
+  /** Return one queryable link window without materialising every link in Node. */
+  async getCrawlLinkWindow(id, options = {}) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+    const limit = Math.min(250, Math.max(1, Number.parseInt(options.limit, 10) || 50));
+    const filter = ['all', 'internal', 'external', 'redirects', 'in-content', '200', 'errors', 'nofollow'].includes(options.filter) ? options.filter : 'all';
+    const query = String(options.query || '').trim().slice(0, 200);
+    const direction = options.direction === 'desc' ? 'DESC' : 'ASC';
+    const sortColumns = {
+      index: 'id', status: 'status_code', anchor: 'anchor_text', destination: 'target_url', type: 'link_type',
+      content: 'is_inside_content', nofollow: 'is_nofollow', source: 'source_url'
+    };
+    const sort = Object.prototype.hasOwnProperty.call(sortColumns, options.sort) ? options.sort : 'index';
+    const where = ['crawl_id = ?'];
+    const values = [id];
+    // Older schemas did not store is_internal separately; link_type is the
+    // durable source of truth. Keep the expression backwards compatible.
+    const stableInternal = "link_type = 'Internal'";
+    const redirected = 'JSON_LENGTH(COALESCE(redirect_chain, JSON_ARRAY())) > 0';
+    if (filter === 'internal') where.push(stableInternal);
+    if (filter === 'external') where.push("link_type = 'External'");
+    if (filter === 'redirects') where.push(redirected);
+    if (filter === 'in-content') where.push('is_inside_content = 1');
+    if (filter === '200') where.push('status_code = 200');
+    if (filter === 'errors') where.push('(COALESCE(status_code, 0) = 0 OR COALESCE(status_code, 0) >= 400)');
+    if (filter === 'nofollow') where.push('is_nofollow = 1');
+    if (query) {
+      where.push("CONCAT_WS(' ', source_url, target_url, final_url, anchor_text, status_code) LIKE ?");
+      values.push(`%${query}%`);
+    }
+    const [crawlRows] = await this.pool.execute('SELECT id FROM crawl_runs WHERE id = ?', [id]);
+    if (!crawlRows.length) return null;
+    const whereSql = where.join(' AND ');
+    const [[totalRow]] = await this.pool.execute(`SELECT COUNT(*) AS total FROM crawl_links WHERE ${whereSql}`, values);
+    const [countRows] = await this.pool.execute(
+      `SELECT COUNT(*) AS allLinks,
+        SUM(${stableInternal}) AS internalLinks,
+        SUM(link_type = 'External') AS externalLinks,
+        SUM(${redirected}) AS redirects,
+        SUM(is_inside_content = 1) AS inContent,
+        SUM(status_code = 200) AS ok,
+        SUM(COALESCE(status_code, 0) = 0 OR COALESCE(status_code, 0) >= 400) AS errors,
+        SUM(is_nofollow = 1) AS nofollow
+       FROM crawl_links WHERE crawl_id = ?`,
+      [id]
+    );
+    const [rows] = await this.pool.execute(
+      `SELECT source_url, target_url, raw_href, anchor_text, link_type, rel_value, target_value,
+        is_nofollow, is_inside_content, is_valid_http, status_code, final_status_code, final_url, redirect_chain
+       FROM crawl_links WHERE ${whereSql}
+       ORDER BY ${sortColumns[sort]} ${direction}, id ASC LIMIT ? OFFSET ?`,
+      [...values, limit, offset]
+    );
+    const counts = countRows[0] || {};
+    return {
+      offset, limit, total: Number(totalRow.total || 0),
+      counts: {
+        all: Number(counts.allLinks || 0), internal: Number(counts.internalLinks || 0), external: Number(counts.externalLinks || 0),
+        redirects: Number(counts.redirects || 0), 'in-content': Number(counts.inContent || 0), '200': Number(counts.ok || 0),
+        errors: Number(counts.errors || 0), nofollow: Number(counts.nofollow || 0)
+      },
+      links: rows.map(link => ({
+        sourceUrl: link.source_url || '', targetUrl: link.target_url || '', url: link.target_url || '', rawHref: link.raw_href || '',
+        anchorText: link.anchor_text || '', linkType: link.link_type || 'Internal', rel: link.rel_value || '', target: link.target_value || '',
+        isInternal: link.link_type === 'Internal', isNofollow: Boolean(link.is_nofollow), isInsideCustom: Boolean(link.is_inside_content),
+        isValidHttp: Boolean(link.is_valid_http), statusCode: link.status_code, finalStatusCode: link.final_status_code,
+        finalUrl: link.final_url || '', redirectChain: parseJson(link.redirect_chain, [])
+      }))
+    };
+  }
+
   async compareCrawls(previousId, currentId) {
     if (!(await this.initialize()) || !this.pool) {
       throw new Error('Persistent crawl history is not connected.');

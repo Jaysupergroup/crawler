@@ -882,6 +882,7 @@ function getDashboardStatus(sessionId, crawler) {
     queueLength: crawler?.queue.length || 0,
     config: crawler?.getConfigSummary() || null,
     engine: crawler?.getEngineStatus() || null,
+    historyAudit: crawler?.historyAudit || null,
     capacity: getCrawlCapacity()
   };
 }
@@ -1136,7 +1137,14 @@ app.get('/api/crawler/page-html', async (req, res) => {
   const url = typeof req.query.url === 'string' ? req.query.url : '';
   if (!crawler || !url) return res.status(400).json({ error: 'Choose an audited page before viewing its HTML.' });
   if (crawler.isRunning) return res.status(409).json({ error: 'Wait for the crawl to finish before opening an HTML comparison.' });
-  const auditedPage = crawler.results.find(page => page.url === url);
+  let auditedPage = crawler.results.find(page => page.url === url);
+  if (!auditedPage && crawler.historyAudit?.crawlId) {
+    try {
+      auditedPage = await crawlStorage.getCrawlPage(crawler.historyAudit.crawlId, url);
+    } catch (error) {
+      return res.status(500).json({ error: error.message || 'Could not verify the saved page.' });
+    }
+  }
   if (!auditedPage) return res.status(404).json({ error: 'That page is not part of this crawl session.' });
 
   try {
@@ -1228,6 +1236,63 @@ app.get('/api/crawler/history/compare', async (req, res) => {
   }
 });
 
+// Saved audits use small database-backed windows instead of sending every
+// stored page and LONGTEXT field to the browser in one restore response.
+app.get('/api/crawler/history/:crawlId/pages', async (req, res) => {
+  const crawlId = req.params.crawlId;
+  if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
+  try {
+    const window = await crawlStorage.getCrawlPageWindow(crawlId, {
+      offset: req.query.offset,
+      limit: req.query.limit,
+      tab: req.query.tab,
+      filter: req.query.filter,
+      query: req.query.query,
+      sort: req.query.sort,
+      direction: req.query.direction
+    });
+    if (!window) return res.status(404).json({ error: 'Saved crawl not found.' });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(window);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Could not load saved audit pages.' });
+  }
+});
+
+app.get('/api/crawler/history/:crawlId/page', async (req, res) => {
+  const crawlId = req.params.crawlId;
+  const url = typeof req.query.url === 'string' ? req.query.url : '';
+  if (!/^[a-f0-9-]{36}$/i.test(crawlId) || !url) return res.status(400).json({ error: 'Choose a valid saved page.' });
+  try {
+    const page = await crawlStorage.getCrawlPage(crawlId, url);
+    if (!page) return res.status(404).json({ error: 'Saved page not found.' });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ page });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Could not load the saved page.' });
+  }
+});
+
+app.get('/api/crawler/history/:crawlId/links', async (req, res) => {
+  const crawlId = req.params.crawlId;
+  if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
+  try {
+    const window = await crawlStorage.getCrawlLinkWindow(crawlId, {
+      offset: req.query.offset,
+      limit: req.query.limit,
+      filter: req.query.filter,
+      query: req.query.query,
+      sort: req.query.sort,
+      direction: req.query.direction
+    });
+    if (!window) return res.status(404).json({ error: 'Saved crawl not found.' });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(window);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Could not load saved audit links.' });
+  }
+});
+
 app.get('/api/crawler/history/:crawlId', async (req, res) => {
   try {
     const history = await crawlStorage.getCrawl(req.params.crawlId);
@@ -1245,11 +1310,12 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
   const { sessionId, crawler: currentCrawler } = getSessionCrawler(req);
   if (currentCrawler?.isRunning) return res.status(409).json({ error: 'Pause or stop the current crawl before restoring saved history.' });
   try {
-    const history = await crawlStorage.getCrawl(req.params.crawlId);
-    if (!history) return res.status(404).json({ error: 'Saved crawl not found.' });
-    const config = history.crawl.config || {};
+    const historyWindow = await crawlStorage.getCrawlPageWindow(req.params.crawlId, { limit: 50 });
+    if (!historyWindow) return res.status(404).json({ error: 'Saved crawl not found.' });
+    const { crawl } = historyWindow;
+    const config = crawl.config || {};
     const restoredCrawler = new SiteCrawler({
-      seedUrl: history.crawl.seedUrl,
+      seedUrl: crawl.seedUrl,
       crawlScope: config.crawlScope,
       maxDepth: config.maxDepth,
       maxPages: config.maxPages,
@@ -1261,35 +1327,53 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
       region: config.region,
       blockCrossDomainRedirects: config.blockCrossDomainRedirects
     });
-    restoredCrawler.results = history.results;
-    restoredCrawler.allLinks = history.results.flatMap(page => (page.links || []).map(link => ({
-      ...link,
-      sourceUrl: page.url,
-      targetUrl: link.targetUrl || link.url || ''
-    })));
-    restoredCrawler.stats = history.crawl.stats || { ...restoredCrawler.stats, pagesCrawled: history.results.length, endTime: Date.now() };
+    restoredCrawler.results = historyWindow.results;
+    restoredCrawler.allLinks = [];
+    restoredCrawler.historyAudit = { crawlId: crawl.id, totalPages: historyWindow.counts.all, loadedPages: historyWindow.results.length };
+    restoredCrawler.stats = crawl.stats || { ...restoredCrawler.stats, pagesCrawled: historyWindow.counts.all, endTime: Date.now() };
     restoredCrawler.queue = [];
     restoredCrawler.isRunning = false;
     restoredCrawler.isPaused = false;
-    restoredCrawler.engineMode = history.crawl.engine?.mode || 'browser';
-    restoredCrawler.engineProvider = history.crawl.engine?.provider || null;
-    restoredCrawler.engineError = history.crawl.engine?.error || null;
-    crawlerSessions.set(sessionId, { crawler: restoredCrawler, crawlId: history.crawl.id, updatedAt: Date.now() });
-    broadcastSSE(sessionId, 'restored', { crawlId: history.crawl.id, stats: restoredCrawler.stats, engine: restoredCrawler.getEngineStatus() });
-    return res.json({ success: true, crawl: history.crawl, restoredPages: history.results.length });
+    restoredCrawler.engineMode = crawl.engine?.mode || 'browser';
+    restoredCrawler.engineProvider = crawl.engine?.provider || null;
+    restoredCrawler.engineError = crawl.engine?.error || null;
+    crawlerSessions.set(sessionId, { crawler: restoredCrawler, crawlId: crawl.id, updatedAt: Date.now() });
+    broadcastSSE(sessionId, 'restored', { crawlId: crawl.id, stats: restoredCrawler.stats, engine: restoredCrawler.getEngineStatus(), historyAudit: restoredCrawler.historyAudit });
+    return res.json({ success: true, crawl, restoredPages: historyWindow.counts.all, loadedPages: historyWindow.results.length });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Could not restore the saved crawl.' });
   }
 });
 
 // Export Endpoints
+async function getExportData(crawler) {
+  if (!crawler) return null;
+  if (!crawler.historyAudit?.crawlId) return { results: crawler.results, links: crawler.allLinks };
+  try {
+    const history = await crawlStorage.getCrawl(crawler.historyAudit.crawlId);
+    if (!history) return null;
+    return {
+      results: history.results,
+      links: history.results.flatMap(page => (page.links || []).map(link => ({
+        ...link,
+        sourceUrl: page.url,
+        targetUrl: link.targetUrl || link.url || ''
+      })))
+    };
+  } catch (error) {
+    console.error('Could not load the full saved audit for export:', error.message);
+    return null;
+  }
+}
+
 app.get(['/api/export/workbook.xlsx', '/api/export/excel'], async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) {
     return res.status(400).send('No crawl data available to export.');
   }
   try {
-    const buffer = await Exporter.generateMultiSheetWorkbook(crawler.results, crawler.allLinks);
+    const buffer = await Exporter.generateMultiSheetWorkbook(exportData.results, exportData.links);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="CrawlLoom_MultiSheet_Report_${Date.now()}.xlsx"`);
     res.send(buffer);
@@ -1299,64 +1383,70 @@ app.get(['/api/export/workbook.xlsx', '/api/export/excel'], async (req, res) => 
   }
 });
 
-app.get('/api/export/pages.csv', (req, res) => {
+app.get('/api/export/pages.csv', async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) {
     return res.status(400).send('No crawl data available to export.');
   }
-  const csv = Exporter.generatePagesCSV(crawler.results);
+  const csv = Exporter.generatePagesCSV(exportData.results);
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="seo_pages_crawl_${Date.now()}.csv"`);
   res.send(csv);
 });
 
-app.get('/api/export/links.csv', (req, res) => {
+app.get('/api/export/links.csv', async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.allLinks.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.links.length) {
     return res.status(400).send('No links data available to export.');
   }
-  const csv = Exporter.generateLinksCSV(crawler.allLinks);
+  const csv = Exporter.generateLinksCSV(exportData.links);
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="all_links_crawl_${Date.now()}.csv"`);
   res.send(csv);
 });
 
-app.get('/api/export/issues.csv', (req, res) => {
+app.get('/api/export/issues.csv', async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) {
     return res.status(400).send('No crawl data available to export.');
   }
-  const csv = Exporter.generateIssuesCSV(crawler.results, crawler.allLinks);
+  const csv = Exporter.generateIssuesCSV(exportData.results, exportData.links);
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="seo_issues_crawl_${Date.now()}.csv"`);
   res.send(csv);
 });
 
-app.get('/api/export/resources.csv', (req, res) => {
+app.get('/api/export/resources.csv', async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) {
     return res.status(400).send('No crawl data available to export.');
   }
-  const csv = Exporter.generateResourcesCSV(crawler.results);
+  const csv = Exporter.generateResourcesCSV(exportData.results);
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="resources_assets_crawl_${Date.now()}.csv"`);
   res.send(csv);
 });
 
-app.get('/api/export/images.csv', (req, res) => {
+app.get('/api/export/images.csv', async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) return res.status(400).send('No crawl data available to export.');
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) return res.status(400).send('No crawl data available to export.');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="image_seo_crawl_${Date.now()}.csv"`);
-  res.send(Exporter.generateImagesCSV(crawler.results));
+  res.send(Exporter.generateImagesCSV(exportData.results));
 });
 
-app.get(['/api/export/custom-content.csv', '/api/export/kentico.csv'], (req, res) => {
+app.get(['/api/export/custom-content.csv', '/api/export/kentico.csv'], async (req, res) => {
   const { crawler } = getSessionCrawler(req);
-  if (!crawler || !crawler.results.length) {
+  const exportData = await getExportData(crawler);
+  if (!exportData?.results.length) {
     return res.status(400).send('No crawl data available to export.');
   }
-  const csv = Exporter.generateCustomContentReportCSV(crawler.results);
+  const csv = Exporter.generateCustomContentReportCSV(exportData.results);
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="custom_content_report_${Date.now()}.csv"`);
   res.send(csv);
