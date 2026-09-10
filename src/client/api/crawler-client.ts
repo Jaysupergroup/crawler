@@ -1,4 +1,4 @@
-import type { CrawlComparison, CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLink, CrawlHistoryDetail, CrawlHistoryRecord, CrawlHistoryLinkWindow, CrawlHistoryPageWindow, HtmlComparisonCapture } from '../types/crawl';
+import type { CrawlComparison, CrawlConfig, CrawlerStatus, CrawlerSnapshot, CrawlPage, CrawledLink, CrawlHistoryDetail, CrawlHistoryRecord, CrawlHistoryLinkWindow, CrawlHistoryPageWindow, CrawlHistoryResourceWindow, HtmlComparisonCapture } from '../types/crawl';
 
 // The browser retains only a server-issued opaque ID. The API verifies that ID
 // belongs to the currently signed-in account before serving crawl data.
@@ -105,6 +105,10 @@ export const crawlerClient = {
   historyLinks: (crawlId: string, options: Record<string, string | number>) => {
     const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)])).toString();
     return request<CrawlHistoryLinkWindow>(`/api/crawler/history/${encodeURIComponent(crawlId)}/links?${query}`, { signal: AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS) });
+  },
+  historyResources: (crawlId: string, options: Record<string, string | number>) => {
+    const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)])).toString();
+    return request<CrawlHistoryResourceWindow>(`/api/crawler/history/${encodeURIComponent(crawlId)}/resources?${query}`, { signal: AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS) });
   },
   historyPage: (crawlId: string, url: string) => request<{ page: CrawlPage }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/page?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS) }),
   restoreHistory: (crawlId: string) => request<{ success: boolean; restoredPages: number; loadedPages: number; crawl: { seedUrl: string; config?: Partial<CrawlConfig> } }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/restore`, { method: 'POST', body: '{}' }),

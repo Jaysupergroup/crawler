@@ -1293,6 +1293,29 @@ app.get('/api/crawler/history/:crawlId/links', async (req, res) => {
   }
 });
 
+// Resource inventories can be much larger than their parent page list. Read
+// them in database-backed windows so opening a saved audit never downloads
+// every CSS, JavaScript, image, font and media record at once.
+app.get('/api/crawler/history/:crawlId/resources', async (req, res) => {
+  const crawlId = req.params.crawlId;
+  if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
+  try {
+    const window = await crawlStorage.getCrawlResourceWindow(crawlId, {
+      offset: req.query.offset,
+      limit: req.query.limit,
+      filter: req.query.filter,
+      query: req.query.query,
+      sort: req.query.sort,
+      direction: req.query.direction
+    });
+    if (!window) return res.status(404).json({ error: 'Saved crawl not found.' });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(window);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Could not load saved audit resources.' });
+  }
+});
+
 app.get('/api/crawler/history/:crawlId', async (req, res) => {
   try {
     const history = await crawlStorage.getCrawl(req.params.crawlId);
@@ -1329,7 +1352,10 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
     });
     restoredCrawler.results = historyWindow.results;
     restoredCrawler.allLinks = [];
-    restoredCrawler.historyAudit = { crawlId: crawl.id, totalPages: historyWindow.counts.all, loadedPages: historyWindow.results.length };
+    restoredCrawler.historyAudit = {
+      crawlId: crawl.id, totalPages: historyWindow.counts.all, loadedPages: historyWindow.results.length,
+      totalResources: historyWindow.resourceTotal || 0
+    };
     restoredCrawler.stats = crawl.stats || { ...restoredCrawler.stats, pagesCrawled: historyWindow.counts.all, endTime: Date.now() };
     restoredCrawler.queue = [];
     restoredCrawler.isRunning = false;

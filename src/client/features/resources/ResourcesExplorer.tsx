@@ -8,12 +8,12 @@ type SortKey = 'index' | 'type' | 'url' | 'status' | 'size' | 'source';
 function normalizeType(resource: CrawledResource) { return (resource.resourceType || 'Other').toLowerCase(); }
 function isLoaded(resource: CrawledResource) { return resource.discoveryStatus === 'Loaded' || ((resource.statusCode || 0) >= 200 && (resource.statusCode || 0) < 400); }
 function isError(resource: CrawledResource) { return resource.statusCode === 0 || (resource.statusCode || 0) >= 400; }
-function formatBytes(size?: number | null) {
+export function formatBytes(size?: number | null) {
   if (!size || size < 1) return '—';
   return size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(size / 1024)} KB`;
 }
 
-function ResourceInspector({ resource, onClose }: { resource: CrawledResource; onClose: () => void }) {
+export function ResourceInspector({ resource, onClose }: { resource: CrawledResource; onClose: () => void }) {
   const status = resource.statusCode || resource.discoveryStatus || 'Not checked';
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="inspector link-inspector" role="dialog" aria-modal="true" aria-label="Resource details" onMouseDown={event => event.stopPropagation()}>

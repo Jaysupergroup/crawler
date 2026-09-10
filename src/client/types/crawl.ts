@@ -181,6 +181,7 @@ export interface HistoryAudit {
   crawlId: string;
   totalPages: number;
   loadedPages: number;
+  totalResources?: number;
 }
 
 export interface CrawlHistoryRecord {
@@ -205,6 +206,7 @@ export interface CrawlHistoryPageWindow {
   total: number;
   offset: number;
   limit: number;
+  resourceTotal?: number;
   counts: Record<'all' | 'title' | 'description' | 'keywords' | 'h1' | 'h2' | 'content', number>;
 }
 
@@ -214,6 +216,14 @@ export interface CrawlHistoryLinkWindow {
   offset: number;
   limit: number;
   counts: Record<'all' | 'internal' | 'external' | 'redirects' | 'in-content' | '200' | 'errors' | 'nofollow', number>;
+}
+
+export interface CrawlHistoryResourceWindow {
+  resources: CrawledResource[];
+  total: number;
+  offset: number;
+  limit: number;
+  counts: Record<'all' | 'stylesheet' | 'script' | 'image' | 'media-font' | 'loaded' | 'blocked' | 'errors', number>;
 }
 
 export type CrawlComparisonChangeType = 'new' | 'missing' | 'changed';

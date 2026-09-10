@@ -496,7 +496,8 @@ export class CrawlStorage {
         SUM(COALESCE(meta_keywords, '') <> '') AS keywordPages,
         SUM(COALESCE(h1, '') <> '') AS h1Pages,
         SUM(JSON_LENGTH(COALESCE(h2_list, JSON_ARRAY())) > 0) AS h2Pages,
-        SUM(${hasContent}) AS contentPages
+        SUM(${hasContent}) AS contentPages,
+        COALESCE(SUM(JSON_LENGTH(resources_json)), 0) AS resourceTotal
        FROM crawl_pages WHERE crawl_id = ?`,
       [id]
     );
@@ -519,7 +520,7 @@ export class CrawlStorage {
         stats: parseJson(crawl.stats_json, null), engine: parseJson(crawl.engine_json, null), createdAt: crawl.created_at,
         startedAt: crawl.started_at, completedAt: crawl.completed_at
       },
-      offset, limit, total: Number(totalRow.total || 0),
+      offset, limit, total: Number(totalRow.total || 0), resourceTotal: Number(counts.resourceTotal || 0),
       counts: {
         all: Number(counts.allPages || 0), title: Number(counts.titlePages || 0), description: Number(counts.descriptionPages || 0),
         keywords: Number(counts.keywordPages || 0), h1: Number(counts.h1Pages || 0), h2: Number(counts.h2Pages || 0), content: Number(counts.contentPages || 0)
@@ -640,6 +641,93 @@ export class CrawlStorage {
         isInternal: link.link_type === 'Internal', isNofollow: Boolean(link.is_nofollow), isInsideCustom: Boolean(link.is_inside_content),
         isValidHttp: Boolean(link.is_valid_http), statusCode: link.status_code, finalStatusCode: link.final_status_code,
         finalUrl: link.final_url || '', redirectChain: parseJson(link.redirect_chain, [])
+      }))
+    };
+  }
+
+  /**
+   * Reads resources directly from the JSON stored with each saved page.
+   * JSON_TABLE lets MySQL page the resource inventory without first sending
+   * every page (or every asset) to Node and then the browser. This is vital
+   * for historical crawls that can contain hundreds of thousands of assets.
+   */
+  async getCrawlResourceWindow(id, options = {}) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+    const limit = Math.min(250, Math.max(1, Number.parseInt(options.limit, 10) || 50));
+    const filter = ['all', 'stylesheet', 'script', 'image', 'media-font', 'loaded', 'blocked', 'errors'].includes(options.filter) ? options.filter : 'all';
+    const query = String(options.query || '').trim().slice(0, 200);
+    const direction = options.direction === 'desc' ? 'DESC' : 'ASC';
+    const sortColumns = {
+      index: 'page.page_number', type: 'resource.resource_type', url: 'resource.resource_url', status: 'resource.status_code',
+      size: 'resource.size_bytes', source: 'page.url'
+    };
+    const sort = Object.prototype.hasOwnProperty.call(sortColumns, options.sort) ? options.sort : 'index';
+    const resourceRows = `crawl_pages AS page
+      JOIN JSON_TABLE(COALESCE(page.resources_json, JSON_ARRAY()), '$[*]' COLUMNS (
+        resource_index FOR ORDINALITY,
+        resource_url VARCHAR(2048) PATH '$.url' NULL ON EMPTY,
+        raw_url VARCHAR(2048) PATH '$.rawUrl' NULL ON EMPTY,
+        resource_type VARCHAR(64) PATH '$.resourceType' NULL ON EMPTY,
+        element_name VARCHAR(64) PATH '$.element' NULL ON EMPTY,
+        attribute_name VARCHAR(64) PATH '$.attribute' NULL ON EMPTY,
+        status_code INT PATH '$.statusCode' NULL ON EMPTY,
+        size_bytes BIGINT PATH '$.sizeBytes' NULL ON EMPTY,
+        discovery_status VARCHAR(64) PATH '$.discoveryStatus' NULL ON EMPTY
+      )) AS resource`;
+    const type = "LOWER(COALESCE(resource.resource_type, 'other'))";
+    const loaded = "(resource.discovery_status = 'Loaded' OR (resource.status_code >= 200 AND resource.status_code < 400))";
+    const errors = '(resource.status_code = 0 OR resource.status_code >= 400)';
+    const where = ['page.crawl_id = ?', "COALESCE(resource.resource_url, '') <> ''"];
+    const values = [id];
+    if (filter === 'stylesheet') where.push(`${type} = 'stylesheet'`);
+    if (filter === 'script') where.push(`${type} = 'script'`);
+    if (filter === 'image') where.push(`${type} = 'image'`);
+    if (filter === 'media-font') where.push(`${type} IN ('media', 'font')`);
+    if (filter === 'loaded') where.push(loaded);
+    if (filter === 'blocked') where.push("resource.discovery_status = 'Blocked by crawler'");
+    if (filter === 'errors') where.push(errors);
+    if (query) {
+      where.push("CONCAT_WS(' ', page.url, resource.resource_url, resource.resource_type, resource.discovery_status, resource.status_code) LIKE ?");
+      values.push(`%${query}%`);
+    }
+    const [crawlRows] = await this.pool.execute('SELECT id FROM crawl_runs WHERE id = ?', [id]);
+    if (!crawlRows.length) return null;
+    const whereSql = where.join(' AND ');
+    const [[totalRow]] = await this.pool.execute(`SELECT COUNT(*) AS total FROM ${resourceRows} WHERE ${whereSql}`, values);
+    const [countRows] = await this.pool.execute(
+      `SELECT COUNT(*) AS allResources,
+        SUM(${type} = 'stylesheet') AS stylesheets,
+        SUM(${type} = 'script') AS scripts,
+        SUM(${type} = 'image') AS images,
+        SUM(${type} IN ('media', 'font')) AS mediaFonts,
+        SUM(${loaded}) AS loaded,
+        SUM(resource.discovery_status = 'Blocked by crawler') AS blocked,
+        SUM(${errors}) AS errors
+       FROM ${resourceRows}
+       WHERE page.crawl_id = ? AND COALESCE(resource.resource_url, '') <> ''`,
+      [id]
+    );
+    const [rows] = await this.pool.execute(
+      `SELECT page.url AS source_url, resource.resource_url, resource.raw_url, resource.resource_type,
+        resource.element_name, resource.attribute_name, resource.status_code, resource.size_bytes, resource.discovery_status
+       FROM ${resourceRows}
+       WHERE ${whereSql}
+       ORDER BY ${sortColumns[sort]} ${direction}, page.page_number ASC, resource.resource_index ASC LIMIT ? OFFSET ?`,
+      [...values, limit, offset]
+    );
+    const counts = countRows[0] || {};
+    return {
+      offset, limit, total: Number(totalRow.total || 0),
+      counts: {
+        all: Number(counts.allResources || 0), stylesheet: Number(counts.stylesheets || 0), script: Number(counts.scripts || 0),
+        image: Number(counts.images || 0), 'media-font': Number(counts.mediaFonts || 0), loaded: Number(counts.loaded || 0),
+        blocked: Number(counts.blocked || 0), errors: Number(counts.errors || 0)
+      },
+      resources: rows.map(resource => ({
+        url: resource.resource_url || '', rawUrl: resource.raw_url || '', resourceType: resource.resource_type || 'Other',
+        element: resource.element_name || '', attribute: resource.attribute_name || '', statusCode: resource.status_code,
+        sizeBytes: resource.size_bytes, discoveryStatus: resource.discovery_status || '', sourceUrl: resource.source_url || ''
       }))
     };
   }
