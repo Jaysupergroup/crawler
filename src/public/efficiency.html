@@ -134,6 +134,23 @@
       </ol>
     </section>
 
+    <section>
+      <h2>Review findings to address</h2>
+      <ul>
+        <li>Use an exact host or dot-boundary check for subdomain crawling so unrelated domains cannot match the root domain.</li>
+        <li>Make cross-domain redirect blocking enforceable rather than only logging the redirect.</li>
+        <li>Reserve crawl-page capacity atomically so concurrent workers cannot exceed the configured page limit.</li>
+        <li>Surface persistence failures to users instead of allowing a crawl to appear complete with incomplete saved history.</li>
+        <li>Move active crawl jobs and sessions into shared storage before supporting multiple server instances or restart recovery.</li>
+        <li>Keep the legacy dashboard isolated or retire it so it cannot diverge from the supported React dashboard.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Priority for reliability</h2>
+      <p>Address network-boundary and redirect enforcement first, then make page limits exact. After that, improve persistence visibility and shared session storage. These changes protect crawl correctness and security before optimizing the user interface further.</p>
+    </section>
+
     <footer>Recommendation recorded on September 10, 2026.</footer>
   </main>
 </body>
