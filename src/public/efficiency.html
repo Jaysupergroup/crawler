@@ -110,6 +110,30 @@
       <p>The existing <code>MAX_CONCURRENT_CRAWLS</code> limit can become the worker-pool limit instead of rejecting work when all slots are occupied. This smooths out load, reduces memory spikes, and gives users predictable progress while keeping the API available.</p>
     </section>
 
+    <section>
+      <h2>Additional efficiency opportunities</h2>
+      <ul>
+        <li>Virtualize large pages and links tables so the browser renders only visible rows.</li>
+        <li>Use paginated or cursor-based loading for large crawl history and restored audits.</li>
+        <li>Reuse browser instances through a controlled browser pool instead of repeatedly starting Chromium.</li>
+        <li>Batch page database writes, such as 25 or 50 pages per insert, to reduce database round trips.</li>
+        <li>Generate Excel reports as background jobs so large exports do not hold an API request open.</li>
+        <li>Cache versioned public assets with long-lived cache headers.</li>
+        <li>Calculate SEO issues incrementally or in a Web Worker to keep the dashboard responsive.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Suggested implementation order</h2>
+      <ol>
+        <li>Add the crawl job queue and worker pool.</li>
+        <li>Virtualize large result tables.</li>
+        <li>Add paginated history restoration and result loading.</li>
+        <li>Batch database persistence.</li>
+        <li>Move large exports into background jobs.</li>
+      </ol>
+    </section>
+
     <footer>Recommendation recorded on September 10, 2026.</footer>
   </main>
 </body>
