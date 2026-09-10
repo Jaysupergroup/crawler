@@ -112,6 +112,7 @@ export const crawlerClient = {
   },
   historyPage: (crawlId: string, url: string) => request<{ page: CrawlPage }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/page?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS) }),
   restoreHistory: (crawlId: string) => request<{ success: boolean; restoredPages: number; loadedPages: number; crawl: { seedUrl: string; config?: Partial<CrawlConfig> } }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/restore`, { method: 'POST', body: '{}' }),
+  resumeHistory: (crawlId: string) => request<{ success: boolean; crawlId: string }>(`/api/crawler/history/${encodeURIComponent(crawlId)}/resume`, { method: 'POST', body: '{}' }),
   start: (config: CrawlConfig) => request<{ success: boolean }>('/api/crawler/start', { method: 'POST', body: JSON.stringify(config) }),
   pause: () => request<{ success: boolean }>('/api/crawler/pause', { method: 'POST', body: '{}' }),
   resume: () => request<{ success: boolean }>('/api/crawler/resume', { method: 'POST', body: '{}' }),

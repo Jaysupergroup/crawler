@@ -238,6 +238,21 @@ function getDashboardPrincipal(req, touch = true) {
   return null;
 }
 
+function getCrawlOwnerId(principal) {
+  return principal?.role === 'Auditor' ? principal.userId : 'administrator';
+}
+
+function canAccessCrawl(req, crawl) {
+  if (!crawl) return false;
+  return crawl.ownerUserId === getCrawlOwnerId(req.dashboardPrincipal)
+    || (req.dashboardPrincipal?.role === 'Administrator' && !crawl.ownerUserId);
+}
+
+async function hasCrawlAccess(req, crawlId) {
+  const ownerUserId = await crawlStorage.getCrawlOwner(crawlId);
+  return canAccessCrawl(req, { ownerUserId });
+}
+
 // Logging is deliberately best-effort: an unavailable database must never
 // block a login, crawl, or emergency session revocation. Metadata excludes
 // passwords, cookies, and all other credentials.
@@ -494,13 +509,24 @@ app.post('/api/admin/logout', requireAdmin, requireSameOrigin, (req, res) => {
 });
 
 // The dashboard is available to both account types, so it has its own
-// sign-out route. Ending the account session also revokes its dashboard tabs
-// and stops an in-progress crawl rather than leaving it running unattended.
-app.post('/api/access/logout', requireDashboardUser, requireSameOrigin, (req, res) => {
+// sign-out route. Running crawls are suspended and checkpointed before the
+// dashboard session is revoked, allowing the account to resume later.
+app.post('/api/access/logout', requireDashboardUser, requireSameOrigin, async (req, res) => {
   const principal = req.dashboardPrincipal;
   principal.session.endedAt = Date.now();
   for (const [dashboardId, dashboard] of dashboardSessions) {
-    if (dashboard.ownerRole === principal.role && dashboard.ownerSessionId === principal.id) revokeDashboardSession(dashboardId);
+    if (dashboard.ownerRole !== principal.role || dashboard.ownerSessionId !== principal.id) continue;
+    const crawlerRecord = crawlerSessions.get(dashboardId);
+    if (crawlerRecord?.crawler?.isRunning) {
+      await crawlerRecord.crawler.pauseAndWait();
+      await crawlStorage.updateCrawl(crawlerRecord.crawlId, {
+        status: 'paused', stats: crawlerRecord.crawler.stats, engine: crawlerRecord.crawler.getEngineStatus()
+      }).catch(error => console.error('Could not persist paused crawl status:', error.message));
+      await crawlStorage.updateCrawlQueue(crawlerRecord.crawlId, crawlerRecord.crawler.getResumeState())
+        .catch(error => console.error('Could not persist paused crawl queue:', error.message));
+      crawlerRecord.crawler.suspend();
+    }
+    revokeDashboardSession(dashboardId);
   }
   auditSecurityEvent(req, 'access.logout', 'success', { accountType: principal.role, ...(principal.username ? { username: principal.username } : {}) }, {
     adminSession: principal.role === 'Administrator' ? principal.session : null
@@ -733,7 +759,7 @@ function revokeDashboardSession(sessionId) {
   if (!record) return false;
   record.revokedAt = Date.now();
   const crawlerRecord = crawlerSessions.get(sessionId);
-  if (crawlerRecord?.crawler?.isRunning) crawlerRecord.crawler.stop();
+  if (crawlerRecord?.crawler?.isRunning && !crawlerRecord.crawler.isSuspended) crawlerRecord.crawler.stop();
   crawlerSessions.delete(sessionId);
   const clientsToClose = sseClients.filter(client => client.sessionId === sessionId);
   sseClients = sseClients.filter(client => client.sessionId !== sessionId);
@@ -884,6 +910,81 @@ app.get('/api/crawler/snapshot', (req, res) => {
   res.json({ ...getDashboardStatus(sessionId, crawler), results: crawler?.results || [], links: crawler?.allLinks || [] });
 });
 
+function startManagedCrawler(req, sessionId, crawlId, crawler) {
+  let persistenceChain = Promise.resolve();
+  const queuePersistence = (task) => {
+    persistenceChain = persistenceChain
+      .then(task)
+      .catch(error => console.error(`Failed to persist crawl ${crawlId}:`, error.message));
+    return persistenceChain;
+  };
+  const persistCheckpoint = () => queuePersistence(() => crawlStorage.updateCrawlQueue(crawlId, crawler.getResumeState()));
+  crawlerSessions.set(sessionId, { crawler, crawlId, updatedAt: Date.now() });
+  runningCrawlers.add(crawler);
+  const sendCrawlerEvent = (eventType, data) => {
+    if (crawlerSessions.get(sessionId)?.crawler === crawler) broadcastSSE(sessionId, eventType, data);
+  };
+  crawler.on('started', data => {
+    sendCrawlerEvent('started', data);
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, {
+      status: 'running', stats: crawler.stats, engine: crawler.getEngineStatus(), started: true
+    }));
+  });
+  crawler.on('engineSelected', data => sendCrawlerEvent('engineSelected', data));
+  let publishedLinkCount = 0;
+  crawler.on('pageCrawled', data => {
+    const links = crawler.allLinks.slice(publishedLinkCount);
+    publishedLinkCount = crawler.allLinks.length;
+    sendCrawlerEvent('pageCrawled', { ...data, links });
+    queuePersistence(() => crawlStorage.savePage(crawlId, data.result));
+    if (crawler.stats.pagesCrawled % 10 === 0) persistCheckpoint();
+  });
+  crawler.on('paused', () => {
+    sendCrawlerEvent('paused', {});
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'paused', stats: crawler.stats, engine: crawler.getEngineStatus() }));
+    persistCheckpoint();
+  });
+  crawler.on('resumed', () => {
+    sendCrawlerEvent('resumed', {});
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'running', stats: crawler.stats, engine: crawler.getEngineStatus() }));
+  });
+  crawler.on('stopping', () => {
+    sendCrawlerEvent('stopping', {});
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'stopping', stats: crawler.stats, engine: crawler.getEngineStatus() }));
+  });
+  crawler.on('stopped', data => {
+    sendCrawlerEvent('stopped', data);
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'stopped', stats: data.stats, engine: data.engine }));
+    persistCheckpoint();
+  });
+  crawler.on('suspended', data => {
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'paused', stats: data.stats, engine: data.engine }));
+    persistCheckpoint();
+  });
+  crawler.on('completed', data => {
+    sendCrawlerEvent('completed', data);
+    queuePersistence(() => crawlStorage.updateCrawl(crawlId, {
+      status: 'completed', stats: data.stats, engine: data.engine, completed: true
+    }));
+    queuePersistence(() => crawlStorage.updateCrawlQueue(crawlId, null));
+  });
+  crawler.on('error', data => sendCrawlerEvent('error', data));
+
+  const crawlPromise = crawler.start();
+  broadcastCapacity();
+  crawlPromise
+    .catch(error => {
+      console.error('Crawler engine error:', error);
+      sendCrawlerEvent('error', { message: error.message });
+    })
+    .finally(async () => {
+      await persistenceChain;
+      runningCrawlers.delete(crawler);
+      broadcastCapacity();
+    });
+  return crawlPromise;
+}
+
 // Start Crawl
 app.post('/api/crawler/start', async (req, res) => {
   try {
@@ -972,11 +1073,13 @@ app.post('/api/crawler/start', async (req, res) => {
         .catch(error => console.error(`Failed to persist crawl ${crawlId}:`, error.message));
       return persistenceChain;
     };
+    const persistCheckpoint = () => queuePersistence(() => crawlStorage.updateCrawlQueue(crawlId, crawler.getResumeState()));
 
     if (await crawlStorage.initialize()) {
       await queuePersistence(() => crawlStorage.createCrawl({
         id: crawlId,
         sessionId,
+        ownerUserId: getCrawlOwnerId(req.dashboardPrincipal),
         seedUrl,
         config: crawler.getConfigSummary()
       }));
@@ -1004,10 +1107,12 @@ app.post('/api/crawler/start', async (req, res) => {
       publishedLinkCount = crawler.allLinks.length;
       sendCrawlerEvent('pageCrawled', { ...data, links });
       queuePersistence(() => crawlStorage.savePage(crawlId, data.result));
+      if (crawler.stats.pagesCrawled % 10 === 0) persistCheckpoint();
     });
     crawler.on('paused', () => {
       sendCrawlerEvent('paused', {});
       queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'paused', stats: crawler.stats, engine: crawler.getEngineStatus() }));
+      persistCheckpoint();
     });
     crawler.on('resumed', () => {
       sendCrawlerEvent('resumed', {});
@@ -1020,14 +1125,20 @@ app.post('/api/crawler/start', async (req, res) => {
     crawler.on('stopped', data => {
       sendCrawlerEvent('stopped', data);
       queuePersistence(() => crawlStorage.updateCrawl(crawlId, {
-        status: 'stopped', stats: data.stats, engine: data.engine, completed: true
+        status: 'stopped', stats: data.stats, engine: data.engine
       }));
+      persistCheckpoint();
+    });
+    crawler.on('suspended', data => {
+      queuePersistence(() => crawlStorage.updateCrawl(crawlId, { status: 'paused', stats: data.stats, engine: data.engine }));
+      persistCheckpoint();
     });
     crawler.on('completed', data => {
       sendCrawlerEvent('completed', data);
       queuePersistence(() => crawlStorage.updateCrawl(crawlId, {
         status: 'completed', stats: data.stats, engine: data.engine, completed: true
       }));
+      queuePersistence(() => crawlStorage.updateCrawlQueue(crawlId, null));
     });
     crawler.on('error', data => sendCrawlerEvent('error', data));
 
@@ -1206,7 +1317,7 @@ app.get('/api/crawler/links', (req, res) => {
 // Persistent crawl history. These routes remain available after a deployment or process restart.
 app.get('/api/crawler/history', async (req, res) => {
   try {
-    const crawls = await crawlStorage.listCrawls(req.query.limit);
+    const crawls = await crawlStorage.listCrawls(req.query.limit, getCrawlOwnerId(req.dashboardPrincipal));
     res.json({ storage: crawlStorage.getStatus(), crawls });
   } catch (error) {
     res.status(500).json({ error: error.message, storage: crawlStorage.getStatus() });
@@ -1220,6 +1331,9 @@ app.get('/api/crawler/history/compare', async (req, res) => {
     return res.status(400).json({ error: 'Choose two valid saved crawls to compare.' });
   }
   try {
+    if (!(await hasCrawlAccess(req, previousId)) || !(await hasCrawlAccess(req, currentId))) {
+      return res.status(403).json({ error: 'You do not have access to compare one or both saved crawls.' });
+    }
     return res.json(await crawlStorage.compareCrawls(previousId, currentId));
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Could not compare the saved crawls.' });
@@ -1232,6 +1346,7 @@ app.get('/api/crawler/history/:crawlId/pages', async (req, res) => {
   const crawlId = req.params.crawlId;
   if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
   try {
+    if (!(await hasCrawlAccess(req, crawlId))) return res.status(403).json({ error: 'You do not have access to this saved crawl.' });
     const window = await crawlStorage.getCrawlPageWindow(crawlId, {
       offset: req.query.offset,
       limit: req.query.limit,
@@ -1254,6 +1369,7 @@ app.get('/api/crawler/history/:crawlId/page', async (req, res) => {
   const url = typeof req.query.url === 'string' ? req.query.url : '';
   if (!/^[a-f0-9-]{36}$/i.test(crawlId) || !url) return res.status(400).json({ error: 'Choose a valid saved page.' });
   try {
+    if (!(await hasCrawlAccess(req, crawlId))) return res.status(403).json({ error: 'You do not have access to this saved crawl.' });
     const page = await crawlStorage.getCrawlPage(crawlId, url);
     if (!page) return res.status(404).json({ error: 'Saved page not found.' });
     res.setHeader('Cache-Control', 'no-store');
@@ -1267,6 +1383,7 @@ app.get('/api/crawler/history/:crawlId/links', async (req, res) => {
   const crawlId = req.params.crawlId;
   if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
   try {
+    if (!(await hasCrawlAccess(req, crawlId))) return res.status(403).json({ error: 'You do not have access to this saved crawl.' });
     const window = await crawlStorage.getCrawlLinkWindow(crawlId, {
       offset: req.query.offset,
       limit: req.query.limit,
@@ -1290,6 +1407,7 @@ app.get('/api/crawler/history/:crawlId/resources', async (req, res) => {
   const crawlId = req.params.crawlId;
   if (!/^[a-f0-9-]{36}$/i.test(crawlId)) return res.status(400).json({ error: 'Invalid saved crawl identifier.' });
   try {
+    if (!(await hasCrawlAccess(req, crawlId))) return res.status(403).json({ error: 'You do not have access to this saved crawl.' });
     const window = await crawlStorage.getCrawlResourceWindow(crawlId, {
       offset: req.query.offset,
       limit: req.query.limit,
@@ -1308,6 +1426,9 @@ app.get('/api/crawler/history/:crawlId/resources', async (req, res) => {
 
 app.get('/api/crawler/history/:crawlId', async (req, res) => {
   try {
+    const ownerUserId = await crawlStorage.getCrawlOwner(req.params.crawlId);
+    if (ownerUserId === null && !(await crawlStorage.getCrawl(req.params.crawlId))) return res.status(404).json({ error: 'Saved crawl not found.' });
+    if (!canAccessCrawl(req, { ownerUserId })) return res.status(403).json({ error: 'You do not have access to this saved crawl.' });
     const history = await crawlStorage.getCrawl(req.params.crawlId);
     if (!history) return res.status(404).json({ error: 'Saved crawl not found.' });
     res.json(history);
@@ -1323,6 +1444,9 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
   const { sessionId, crawler: currentCrawler } = getSessionCrawler(req);
   if (currentCrawler?.isRunning) return res.status(409).json({ error: 'Pause or stop the current crawl before restoring saved history.' });
   try {
+    const ownerUserId = await crawlStorage.getCrawlOwner(req.params.crawlId);
+    if (ownerUserId === null && !(await crawlStorage.getCrawl(req.params.crawlId))) return res.status(404).json({ error: 'Saved crawl not found.' });
+    if (!canAccessCrawl(req, { ownerUserId })) return res.status(403).json({ error: 'You do not have access to restore this saved crawl.' });
     const historyWindow = await crawlStorage.getCrawlPageWindow(req.params.crawlId, { limit: 50 });
     if (!historyWindow) return res.status(404).json({ error: 'Saved crawl not found.' });
     const { crawl } = historyWindow;
@@ -1334,8 +1458,11 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
       maxPages: config.maxPages,
       noPageLimit: config.noPageLimit,
       concurrency: config.concurrency,
+      delayBetweenRequestsMs: config.delayBetweenRequestsMs,
       autoScroll: config.autoScroll,
       customContentSelector: config.customContentSelector,
+      excludePatterns: config.excludePatterns || [],
+      includePatterns: config.includePatterns || [],
       respectRobotsTxt: config.respectRobotsTxt,
       region: config.region,
       blockCrossDomainRedirects: config.blockCrossDomainRedirects
@@ -1358,6 +1485,63 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
     return res.json({ success: true, crawl, restoredPages: historyWindow.counts.all, loadedPages: historyWindow.results.length });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Could not restore the saved crawl.' });
+  }
+});
+
+app.post('/api/crawler/history/:crawlId/resume', async (req, res) => {
+  const { sessionId, crawler: currentCrawler } = getSessionCrawler(req);
+  if (currentCrawler?.isRunning) return res.status(409).json({ error: 'Pause or stop the current crawl before resuming saved history.' });
+  const capacity = getCrawlCapacity();
+  if (capacity.activeCrawls >= capacity.maxConcurrentCrawls) {
+    return res.status(429).json({ error: 'All crawl slots are occupied. Try again when another crawl finishes.', capacity });
+  }
+  try {
+    const history = await crawlStorage.getCrawl(req.params.crawlId);
+    if (!history) return res.status(404).json({ error: 'Saved crawl not found.' });
+    if (!canAccessCrawl(req, history.crawl)) return res.status(403).json({ error: 'You do not have access to resume this crawl.' });
+    if (history.crawl.status === 'completed') return res.status(409).json({ error: 'Completed crawls cannot be resumed.' });
+    if (!Array.isArray(history.crawl.queue) || history.crawl.queue.length === 0) {
+      return res.status(409).json({ error: 'This crawl has no saved pending queue. Start a new crawl instead.' });
+    }
+
+    const config = history.crawl.config || {};
+    const resumedCrawler = new SiteCrawler({
+      seedUrl: history.crawl.seedUrl,
+      crawlScope: config.crawlScope,
+      maxDepth: config.maxDepth,
+      maxPages: config.maxPages,
+      noPageLimit: config.noPageLimit,
+      concurrency: config.concurrency,
+      delayBetweenRequestsMs: config.delayBetweenRequestsMs,
+      autoScroll: config.autoScroll,
+      customContentSelector: config.customContentSelector,
+      excludePatterns: config.excludePatterns || [],
+      includePatterns: config.includePatterns || [],
+      respectRobotsTxt: config.respectRobotsTxt,
+      region: config.region,
+      blockCrossDomainRedirects: config.blockCrossDomainRedirects,
+      networkPolicy: crawlNetworkPolicy,
+      linkCheckConcurrency: LINK_CHECK_CONCURRENCY,
+      linkCheckDeadlineMs: LINK_CHECK_DEADLINE_MS,
+      isResumed: true,
+      resumedQueue: history.crawl.queue,
+      resumedVisited: history.crawl.visited,
+      resumedResults: history.results,
+      resumedAllLinks: history.results.flatMap(page => (page.links || []).map(link => ({
+        ...link,
+        sourceUrl: page.url,
+        targetUrl: link.targetUrl || link.url || ''
+      }))),
+      resumedStats: history.crawl.stats,
+      resumedNextPageId: history.crawl.nextPageId || history.results.length + 1,
+      resumedRedirectAliases: history.crawl.redirectAliases
+    });
+    startManagedCrawler(req, sessionId, history.crawl.id, resumedCrawler);
+    auditSecurityEvent(req, 'crawl.resumed-from-history', 'success', { crawlId: history.crawl.id });
+    return res.json({ success: true, crawlId: history.crawl.id, message: 'Crawl resumed' });
+  } catch (error) {
+    console.error('Failed to resume saved crawl:', error.message);
+    return res.status(500).json({ error: error.message || 'Could not resume the saved crawl.' });
   }
 });
 

@@ -24,5 +24,6 @@ export function useCrawler() {
   }, [live]);
 
   const restoreHistory = useCallback((crawlId: string) => live.command(() => crawlerClient.restoreHistory(crawlId)), [live]);
-  return { ...state, run, restoreHistory };
+  const resumeHistory = useCallback((crawlId: string) => live.command(() => crawlerClient.resumeHistory(crawlId)), [live]);
+  return { ...state, run, restoreHistory, resumeHistory };
 }

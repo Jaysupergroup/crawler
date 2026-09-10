@@ -76,11 +76,13 @@ export class CrawlStorage {
       CREATE TABLE IF NOT EXISTS crawl_runs (
         id CHAR(36) NOT NULL PRIMARY KEY,
         session_id VARCHAR(128) NOT NULL,
+        owner_user_id VARCHAR(128) NULL,
         seed_url TEXT NOT NULL,
         config_json JSON NULL,
         status VARCHAR(32) NOT NULL DEFAULT 'starting',
         stats_json JSON NULL,
         engine_json JSON NULL,
+        queue_json JSON NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         started_at DATETIME NULL,
         completed_at DATETIME NULL,
@@ -212,6 +214,16 @@ export class CrawlStorage {
     } catch (error) {
       if (error.code !== 'ER_DUP_FIELDNAME') throw error;
     }
+    try {
+      await this.pool.query('ALTER TABLE crawl_runs ADD COLUMN queue_json JSON NULL AFTER engine_json');
+    } catch (error) {
+      if (error.code !== 'ER_DUP_FIELDNAME') throw error;
+    }
+    try {
+      await this.pool.query('ALTER TABLE crawl_runs ADD COLUMN owner_user_id VARCHAR(128) NULL AFTER session_id');
+    } catch (error) {
+      if (error.code !== 'ER_DUP_FIELDNAME') throw error;
+    }
     // Add redirect fields for databases created before redirect auditing was introduced.
     for (const statement of [
       'ALTER TABLE crawl_links ADD COLUMN final_status_code INT NULL AFTER status_code',
@@ -226,12 +238,12 @@ export class CrawlStorage {
     }
   }
 
-  async createCrawl({ id, sessionId, seedUrl, config }) {
+  async createCrawl({ id, sessionId, ownerUserId = null, seedUrl, config }) {
     if (!(await this.initialize())) return false;
     await this.pool.execute(
-      `INSERT INTO crawl_runs (id, session_id, seed_url, config_json, status)
-       VALUES (?, ?, ?, ?, 'starting')`,
-      [id, sessionId, seedUrl, JSON.stringify(config)]
+      `INSERT INTO crawl_runs (id, session_id, owner_user_id, seed_url, config_json, status)
+       VALUES (?, ?, ?, ?, ?, 'starting')`,
+      [id, sessionId, ownerUserId, seedUrl, JSON.stringify(config)]
     );
     return true;
   }
@@ -302,6 +314,17 @@ export class CrawlStorage {
     if (completed) updates.push('completed_at = CURRENT_TIMESTAMP');
     values.push(id);
     await this.pool.execute(`UPDATE crawl_runs SET ${updates.join(', ')} WHERE id = ?`, values);
+  }
+
+  async updateCrawlQueue(id, queue) {
+    if (!this.pool) return;
+    const checkpoint = queue === null
+      ? null
+      : Array.isArray(queue) ? { queue } : (queue && typeof queue === 'object' ? queue : { queue: [] });
+    await this.pool.execute(
+      'UPDATE crawl_runs SET queue_json = ? WHERE id = ?',
+      [checkpoint === null ? null : JSON.stringify(checkpoint), id]
+    );
   }
 
   async savePage(crawlId, result) {
@@ -377,12 +400,16 @@ export class CrawlStorage {
     }
   }
 
-  async listCrawls(limit = 25) {
+  async listCrawls(limit = 25, ownerUserId = null) {
     if (!(await this.initialize())) return [];
+    const ownerFilter = ownerUserId ? 'WHERE owner_user_id = ?' : '';
+    const queryValues = ownerUserId
+      ? [ownerUserId, Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100)]
+      : [Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100)];
     const [rows] = await this.pool.execute(
       `SELECT id, seed_url, status, stats_json, engine_json, created_at, started_at, completed_at
-       FROM crawl_runs ORDER BY created_at DESC LIMIT ?`,
-      [Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100)]
+       FROM crawl_runs ${ownerFilter} ORDER BY created_at DESC LIMIT ?`,
+      queryValues
     );
     return rows.map(row => ({
       id: row.id,
@@ -394,6 +421,12 @@ export class CrawlStorage {
       startedAt: row.started_at,
       completedAt: row.completed_at
     }));
+  }
+
+  async getCrawlOwner(id) {
+    if (!(await this.initialize()) || !this.pool) return null;
+    const [rows] = await this.pool.execute('SELECT owner_user_id AS ownerUserId FROM crawl_runs WHERE id = ?', [id]);
+    return rows[0]?.ownerUserId || null;
   }
 
   async getCrawl(id) {
@@ -416,10 +449,16 @@ export class CrawlStorage {
       linksByPage.set(link.page_id, pageLinks);
     }
     const crawl = crawlRows[0];
+    const checkpoint = parseJson(crawl.queue_json, {});
+    const queue = Array.isArray(checkpoint) ? checkpoint : (Array.isArray(checkpoint.queue) ? checkpoint.queue : []);
     return {
       crawl: {
-        id: crawl.id, seedUrl: crawl.seed_url, status: crawl.status, config: parseJson(crawl.config_json, {}),
-        stats: parseJson(crawl.stats_json, null), engine: parseJson(crawl.engine_json, null), createdAt: crawl.created_at,
+        id: crawl.id, ownerUserId: crawl.owner_user_id || null, seedUrl: crawl.seed_url, status: crawl.status, config: parseJson(crawl.config_json, {}),
+        stats: parseJson(crawl.stats_json, null), engine: parseJson(crawl.engine_json, null), queue,
+        visited: Array.isArray(checkpoint.visited) ? checkpoint.visited : [],
+        redirectAliases: checkpoint.redirectAliases && typeof checkpoint.redirectAliases === 'object' ? checkpoint.redirectAliases : {},
+        nextPageId: Number.isInteger(checkpoint.nextPageId) ? checkpoint.nextPageId : null,
+        createdAt: crawl.created_at,
         startedAt: crawl.started_at, completedAt: crawl.completed_at
       },
       results: pageRows.map(page => ({

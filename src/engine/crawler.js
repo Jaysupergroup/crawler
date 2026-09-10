@@ -41,6 +41,8 @@ export class SiteCrawler extends EventEmitter {
     this.customContentLabel = options.customContentLabel || 'Content Area';
 
     // Exclusion & Inclusion rules
+    this.excludePatternValues = Array.isArray(options.excludePatterns) ? [...options.excludePatterns] : [];
+    this.includePatternValues = Array.isArray(options.includePatterns) ? [...options.includePatterns] : [];
     this.excludePatterns = this.compileRegexList(options.excludePatterns || []);
     this.includePatterns = this.compileRegexList(options.includePatterns || []);
 
@@ -92,6 +94,7 @@ export class SiteCrawler extends EventEmitter {
     this.isRunning = false;
     this.isPaused = false;
     this.isCancelled = false;
+    this.isSuspended = false;
     this.abortController = null;
     this.activePageContexts = new Set();
     this.queue = [];
@@ -103,14 +106,19 @@ export class SiteCrawler extends EventEmitter {
     // Workers reserve a page slot before doing asynchronous work. This keeps a
     // configured page limit exact even when several workers start together.
     this.pagesInFlight = 0;
-    this.nextPageId = 1;
-    this.results = [];
-    this.allLinks = [];
+    this.nextPageId = Number.isInteger(options.resumedNextPageId) ? options.resumedNextPageId : 1;
+    this.results = Array.isArray(options.resumedResults) ? [...options.resumedResults] : [];
+    this.allLinks = Array.isArray(options.resumedAllLinks) ? [...options.resumedAllLinks] : [];
+    this.queue = Array.isArray(options.resumedQueue) ? options.resumedQueue.map(item => ({ ...item })) : [];
+    this.visited = new Set(Array.isArray(options.resumedVisited) ? options.resumedVisited : []);
+    this.queued = new Set(this.queue.map(item => item.url).filter(Boolean));
+    this.redirectAliases = new Map(Object.entries(options.resumedRedirectAliases || {}));
+    this.isResumed = options.isResumed === true;
 
     // Crawl Statistics
     this.stats = {
       pagesCrawled: 0,
-      pagesQueued: 0,
+      pagesQueued: this.queue.length,
       internalLinksCount: 0,
       externalLinksCount: 0,
       errorsCount: 0,
@@ -122,6 +130,9 @@ export class SiteCrawler extends EventEmitter {
       startTime: null,
       endTime: null
     };
+    if (options.resumedStats && typeof options.resumedStats === 'object') {
+      this.stats = { ...this.stats, ...options.resumedStats, endTime: null };
+    }
   }
 
   compileRegexList(patterns) {
@@ -402,9 +413,10 @@ export class SiteCrawler extends EventEmitter {
     if (this.isRunning) return;
     this.isRunning = true;
     this.isCancelled = false;
+    this.isSuspended = false;
     this.isPaused = false;
     this.abortController = new AbortController();
-    this.stats.startTime = Date.now();
+    this.stats.startTime = this.stats.startTime || Date.now();
 
     const normalizedSeed = Extractor.normalizeUrl(this.seedUrl, this.seedUrl);
     if (!normalizedSeed) {
@@ -430,11 +442,13 @@ export class SiteCrawler extends EventEmitter {
       }
     }
 
-    this.queue.push({ url: normalizedSeed, depth: 0, sourceUrl: 'SEED' });
-    this.queued.add(normalizedSeed);
+    if (!this.isResumed && !this.visited.has(normalizedSeed) && !this.queued.has(normalizedSeed)) {
+      this.queue.push({ url: normalizedSeed, depth: 0, sourceUrl: 'SEED' });
+      this.queued.add(normalizedSeed);
+    }
     this.stats.pagesQueued = this.queue.length;
 
-    this.emit('started', { seedUrl: normalizedSeed, config: this.getConfigSummary() });
+    this.emit('started', { seedUrl: normalizedSeed, config: this.getConfigSummary(), resumed: this.isResumed });
 
     try {
       await this.browserManager.init();
@@ -466,7 +480,7 @@ export class SiteCrawler extends EventEmitter {
       this.isRunning = false;
       // Always close the browser, including when a page-level error changed the engine mode.
       await this.browserManager.close().catch(() => {});
-      this.emit(this.isCancelled ? 'stopped' : 'completed', {
+      this.emit(this.isSuspended ? 'suspended' : this.isCancelled ? 'stopped' : 'completed', {
         stats: this.stats,
         resultsCount: this.results.length,
         engine: this.getEngineStatus()
@@ -1153,13 +1167,22 @@ export class SiteCrawler extends EventEmitter {
     this.emit('paused');
   }
 
+  async pauseAndWait(timeoutMs = 30000) {
+    this.pause();
+    const deadline = Date.now() + timeoutMs;
+    while (this.pagesInFlight > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return this.pagesInFlight === 0;
+  }
+
   resume() {
     this.isPaused = false;
     this.emit('resumed');
   }
 
   stop() {
-    if (!this.isRunning || this.isCancelled) return;
+    if (!this.isRunning || this.isCancelled || this.isSuspended) return;
     this.isCancelled = true;
     this.isPaused = false;
     this.queue = [];
@@ -1170,8 +1193,29 @@ export class SiteCrawler extends EventEmitter {
     this.emit('stopping');
   }
 
+  suspend() {
+    if (!this.isRunning || this.isCancelled || this.isSuspended) return;
+    this.isSuspended = true;
+    this.isCancelled = true;
+    this.isPaused = false;
+    this.abortController?.abort();
+    for (const pageContext of [...this.activePageContexts]) {
+      this.closePageContext(pageContext).catch(() => {});
+    }
+  }
+
   isCancellationRequested() {
     return this.isCancelled || Boolean(this.abortController?.signal.aborted);
+  }
+
+  getResumeState() {
+    return {
+      queue: this.queue.map(item => ({ url: item.url, depth: item.depth, sourceUrl: item.sourceUrl })),
+      visited: [...this.visited],
+      redirectAliases: Object.fromEntries(this.redirectAliases),
+      stats: { ...this.stats },
+      nextPageId: this.nextPageId
+    };
   }
 
   emitCrawlerError(message) {
@@ -1215,6 +1259,8 @@ export class SiteCrawler extends EventEmitter {
       concurrency: this.concurrency,
       respectRobotsTxt: this.respectRobotsTxt,
       customContentSelector: this.customContentSelector,
+      excludePatterns: this.excludePatternValues,
+      includePatterns: this.includePatternValues,
       excludePatternsCount: this.excludePatterns.length,
       includePatternsCount: this.includePatterns.length,
       autoScroll: this.autoScroll
