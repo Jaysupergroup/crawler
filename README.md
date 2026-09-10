@@ -46,7 +46,6 @@ MySQL is optional locally. Set `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` an
 | `/app` | Authenticated React dashboard |
 | `/admin/login`, `/admin` | Sign-in and administration |
 | `/next/` | Protected compiled React assets |
-| `/legacy` | Older implementation; not the supported interface |
 
 ## Code map
 

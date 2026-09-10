@@ -72,12 +72,17 @@ test('public documentation is readable without exposing private application rout
   });
 
   await t.test('dashboard and administration still require sign-in and stay noindex', async () => {
-    for (const path of ['/app', '/admin', '/next/', '/legacy']) {
+    for (const path of ['/app', '/admin', '/next/']) {
       const response = await get(path);
       assert.equal(response.status, 302, path);
       assert.match(response.headers.get('location'), /^\/admin\/login/);
       assert.match(response.headers.get('x-robots-tag'), /noindex/);
     }
+  });
+
+  await t.test('retired legacy dashboard is not served', async () => {
+    const response = await get('/legacy');
+    assert.equal(response.status, 404);
   });
 
   await t.test('crawler data, exports and admin data remain unauthorized', async () => {

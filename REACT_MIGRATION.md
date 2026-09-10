@@ -20,9 +20,9 @@ The `/next/` asset base is protected and noindex. It is retained as an asset pat
 
 The React client obtains a server-issued dashboard session bound to the signed-in admin session. It uses the `crawlloom-dashboard-session` sessionStorage key. Server-side session ownership protects controls, results, streams and exports.
 
-The older static dashboard remains at the protected `/legacy` route, but its earlier session/bootstrap implementation is not maintained in lockstep. Do not assume navigation between legacy and React preserves a crawl or that legacy is a tested rollback for current security contracts.
+The legacy static dashboard has been removed. The React dashboard at `/app` is the only supported dashboard interface.
 
-New UI work belongs in React, not `src/public/app.js`. Retiring legacy is a separate reviewed change.
+New UI work belongs in `src/client/`; do not add static dashboard logic under `src/public/`.
 
 ## Delivered functionality
 

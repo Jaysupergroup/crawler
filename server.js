@@ -49,19 +49,10 @@ const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || 'https://workva.co.za').re
 const crawlNetworkPolicy = new CrawlNetworkPolicy();
 const ALLOWED_CRAWL_REGIONS = new Set(['auto', ...Object.keys(GEO_PRESETS)]);
 const STRICT_CONTENT_SECURITY_POLICY = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; font-src 'self'";
-const LEGACY_CONTENT_SECURITY_POLICY = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self'; font-src 'self' https://fonts.gstatic.com";
 
 function preventIndexing(req, res, next) {
   // robots.txt is advisory; this response header is the crawler-enforced layer.
   res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
-  next();
-}
-
-// The legacy dashboard is a protected fallback while the React dashboard is
-// the supported interface. It has a few remaining inline layout styles, so
-// only that route receives a narrow compatibility policy.
-function allowLegacyInlineAssets(req, res, next) {
-  res.setHeader('Content-Security-Policy', LEGACY_CONTENT_SECURITY_POLICY);
   next();
 }
 
@@ -75,21 +66,20 @@ app.use((req, res, next) => {
   if (isSecureRequest(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
-app.use(['/admin', '/api', '/next', '/legacy'], preventIndexing);
+app.use(['/admin', '/api', '/next'], preventIndexing);
 
 // The public homepage explains the product. The React dashboard is isolated
 // under /app so it can remain private and excluded from search indexes.
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'src', 'public', 'home.html')));
 app.get('/app', requireDashboardAccess, (req, res) => res.sendFile(path.join(__dirname, 'src', 'public', 'next', 'index.html')));
 app.get('/index.html', (req, res) => res.redirect(301, '/'));
-app.get('/legacy', requireDashboardAccess, allowLegacyInlineAssets, (req, res) => res.sendFile(path.join(__dirname, 'src', 'public', 'index.html')));
 app.use('/next', requireDashboardAccess);
 app.use(express.static(path.join(__dirname, 'src', 'public')));
 
 // Only public product and information pages are submitted to search engines.
 // Administration, API and preview routes are excluded above and in robots.txt.
 app.get('/robots.txt', (req, res) => {
-  res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /app\nDisallow: /admin\nDisallow: /api\nDisallow: /next\nDisallow: /legacy\n\nSitemap: ${PUBLIC_APP_URL}/sitemap.xml\n`);
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /app\nDisallow: /admin\nDisallow: /api\nDisallow: /next\n\nSitemap: ${PUBLIC_APP_URL}/sitemap.xml\n`);
 });
 
 app.get('/sitemap.xml', (req, res) => {
@@ -888,7 +878,7 @@ function getDashboardStatus(sessionId, crawler) {
 }
 
 // One synchronous snapshot keeps status, pages, links and event revision in
-// agreement. Existing individual endpoints remain available for the legacy UI.
+// agreement. Individual endpoints remain available for focused dashboard reads.
 app.get('/api/crawler/snapshot', (req, res) => {
   const { sessionId, crawler } = getSessionCrawler(req);
   res.json({ ...getDashboardStatus(sessionId, crawler), results: crawler?.results || [], links: crawler?.allLinks || [] });

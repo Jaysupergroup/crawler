@@ -270,11 +270,11 @@ export default function App() {
     setConfig(current => ({
       ...current,
       crawlScope: scope,
-      // The dashboard begins in single-URL mode (1 page). Restore the legacy
+      // The dashboard begins in single-URL mode (1 page). Restore the established
       // 50-page default the first time the user changes to a broader scope.
       maxPages: single ? 1 : (current.crawlScope === 'single-url' ? 50 : Math.max(2, current.maxPages)),
       noPageLimit: single ? false : current.noPageLimit,
-      // Keep a single-page audit at depth 0, but restore the legacy default
+      // Keep a single-page audit at depth 0, but restore the established default
       // of three link levels when entering a multi-page crawl scope.
       maxDepth: single ? 0 : (current.crawlScope === 'single-url' ? 3 : Math.max(1, current.maxDepth))
     }));
