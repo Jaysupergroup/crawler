@@ -146,6 +146,53 @@ async function runTests() {
   assert.strictEqual(normalizedAliases[0].linkType, 'Internal', 'Bare/www alias links should be reclassified as internal');
   console.log('✅ Redirect scope tests passed');
 
+  console.log('--- 5b. Testing Strict Subdomain Boundaries and Redirect Lock ---');
+  const subdomainCrawler = new SiteCrawler({
+    seedUrl: 'https://www.example.co.za',
+    crawlScope: 'subdomains'
+  });
+  assert.strictEqual(
+    subdomainCrawler.isUrlAllowedInScope('https://shop.example.co.za/offers'),
+    true,
+    'A real child subdomain must remain within subdomain scope'
+  );
+  assert.strictEqual(
+    subdomainCrawler.isUrlAllowedInScope('https://notexample.co.za/offers'),
+    false,
+    'A lookalike suffix must not qualify as a subdomain'
+  );
+  const domainLockCrawler = new SiteCrawler({ seedUrl: 'https://www.example.co.za', crawlScope: 'domain' });
+  assert.strictEqual(domainLockCrawler.isRedirectAllowed('https://example.co.za/'), true, 'Bare/www aliases must be allowed by the domain lock');
+  assert.strictEqual(domainLockCrawler.isRedirectAllowed('https://shop.example.co.za/'), false, 'Domain scope must block redirects to child subdomains');
+  assert.strictEqual(domainLockCrawler.isRedirectAllowed('https://notexample.co.za/'), false, 'Domain lock must reject unrelated suffix lookalikes');
+  assert.strictEqual(subdomainCrawler.isRedirectAllowed('https://shop.example.co.za/'), true, 'Subdomains scope may follow a real child subdomain');
+  assert.strictEqual(subdomainCrawler.isRedirectAllowed('https://notexample.co.za/'), false, 'Subdomains scope must reject unrelated suffix lookalikes');
+  console.log('✅ Subdomain boundary and redirect-lock tests passed');
+
+  console.log('--- 5c. Testing Exact Multi-worker Page Limit ---');
+  const limitedCrawler = new SiteCrawler({
+    seedUrl: 'https://example.com',
+    crawlScope: 'domain',
+    maxPages: 2,
+    concurrency: 5
+  });
+  limitedCrawler.queue = Array.from({ length: 5 }, (_, index) => ({
+    url: `https://example.com/page-${index + 1}`,
+    depth: 1,
+    sourceUrl: 'https://example.com/'
+  }));
+  const processedIds = [];
+  limitedCrawler.processPage = async item => {
+    processedIds.push(item.pageId);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    limitedCrawler.stats.pagesCrawled++;
+  };
+  await limitedCrawler.runWorkerPool();
+  assert.strictEqual(limitedCrawler.stats.pagesCrawled, 2, 'Concurrent workers must not exceed maxPages');
+  assert.deepStrictEqual(processedIds, [1, 2], 'Reserved page IDs must be unique and sequential');
+  assert.strictEqual(limitedCrawler.queue.length, 3, 'URLs beyond the configured limit should remain unprocessed');
+  console.log('✅ Exact multi-worker page-limit test passed');
+
   console.log('--- 6. Testing Redirect Chain Recording ---');
   const redirectServer = http.createServer((req, res) => {
     if (req.url === '/old') {

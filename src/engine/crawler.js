@@ -79,6 +79,7 @@ export class SiteCrawler extends EventEmitter {
       geo: this.geo,
       blockCrossDomainRedirects: this.blockCrossDomainRedirects,
       targetHostname: this.baseHostname,
+      isRedirectAllowed: url => this.isRedirectAllowed(url),
       networkPolicy: this.networkPolicy
     });
 
@@ -99,6 +100,10 @@ export class SiteCrawler extends EventEmitter {
     // Maps a requested URL to the URL reached after a redirect. It prevents a
     // later navigation link to the final destination from being audited again.
     this.redirectAliases = new Map();
+    // Workers reserve a page slot before doing asynchronous work. This keeps a
+    // configured page limit exact even when several workers start together.
+    this.pagesInFlight = 0;
+    this.nextPageId = 1;
     this.results = [];
     this.allLinks = [];
 
@@ -155,6 +160,34 @@ export class SiteCrawler extends EventEmitter {
   isWwwAlias(hostnameA, hostnameB) {
     const stripWww = hostname => String(hostname || '').toLowerCase().replace(/^www\./, '');
     return Boolean(hostnameA && hostnameB && stripWww(hostnameA) === stripWww(hostnameB));
+  }
+
+  /** A hostname must end at a DNS label boundary, never merely share a suffix. */
+  isHostnameWithinDomain(hostname, domain) {
+    const candidate = String(hostname || '').toLowerCase().replace(/\.$/, '');
+    const root = String(domain || '').toLowerCase().replace(/\.$/, '');
+    return Boolean(candidate && root && (candidate === root || candidate.endsWith(`.${root}`)));
+  }
+
+  /**
+   * Decide whether a browser or HTTP redirect may leave the seed hostname.
+   * Bare/www aliases are always kept together. Actual child subdomains are
+   * allowed only when the user explicitly selected the subdomains scope.
+   */
+  isRedirectAllowed(url) {
+    if (!this.blockCrossDomainRedirects) return true;
+    try {
+      const hostname = new URL(url).hostname;
+      if (this.isWwwAlias(hostname, this.baseHostname)) return true;
+      return this.crawlScope === 'subdomains' && this.isHostnameWithinDomain(hostname, this.rootDomain);
+    } catch {
+      return false;
+    }
+  }
+
+  assertRedirectAllowed(url) {
+    if (this.isRedirectAllowed(url)) return;
+    throw new UnsafeCrawlTargetError('Target-domain lock blocked a redirect outside the selected crawl scope.');
   }
 
   /**
@@ -277,6 +310,7 @@ export class SiteCrawler extends EventEmitter {
   /** Fetch a page manually, validating the initial target and every redirect. */
   async fetchPublicUrl(url, options = {}) {
     let currentUrl = await this.networkPolicy.assertSafePublicUrl(url);
+    this.assertRedirectAllowed(currentUrl);
     const maxRedirects = 10;
     for (let hop = 0; hop <= maxRedirects; hop++) {
       const response = await fetch(currentUrl, { ...options, redirect: 'manual' });
@@ -291,6 +325,7 @@ export class SiteCrawler extends EventEmitter {
         return { response, url: currentUrl };
       }
       response.body?.cancel?.().catch(() => {});
+      this.assertRedirectAllowed(destinationUrl);
       currentUrl = await this.networkPolicy.assertSafePublicUrl(destinationUrl);
     }
     throw new UnsafeCrawlTargetError('The website redirect chain exceeded the safe limit.');
@@ -453,7 +488,7 @@ export class SiteCrawler extends EventEmitter {
         await new Promise(r => setTimeout(r, 500));
       }
 
-      if (this.stats.pagesCrawled >= this.maxPages || this.isCancelled) {
+      if (this.stats.pagesCrawled + this.pagesInFlight >= this.maxPages || this.isCancelled) {
         break;
       }
 
@@ -465,10 +500,19 @@ export class SiteCrawler extends EventEmitter {
       }
       this.visited.add(item.url);
 
-      if (this.isBrowserMode) {
-        await this.processPage(item, workerId);
-      } else {
-        await this.processPageHttp(item, workerId);
+      // Reserve before awaiting page work. Without this, every worker can see
+      // the same completed count and collectively exceed maxPages.
+      item.pageId = this.nextPageId++;
+      this.pagesInFlight++;
+
+      try {
+        if (this.isBrowserMode) {
+          await this.processPage(item, workerId);
+        } else {
+          await this.processPageHttp(item, workerId);
+        }
+      } finally {
+        this.pagesInFlight = Math.max(0, this.pagesInFlight - 1);
       }
 
       if (this.delayBetweenRequestsMs > 0 && this.queue.length > 0) {
@@ -482,7 +526,7 @@ export class SiteCrawler extends EventEmitter {
     const pageStartTime = Date.now();
 
     let crawlResult = {
-      id: this.stats.pagesCrawled + 1,
+      id: item.pageId || this.nextPageId++,
       url,
       depth,
       sourceUrl,
@@ -651,7 +695,7 @@ export class SiteCrawler extends EventEmitter {
     let page = null;
 
     let crawlResult = {
-      id: this.stats.pagesCrawled + 1,
+      id: item.pageId || this.nextPageId++,
       url,
       depth,
       sourceUrl,
@@ -725,6 +769,7 @@ export class SiteCrawler extends EventEmitter {
       if (this.isCancellationRequested()) return;
 
       const effectiveUrl = page.url() || url;
+      this.assertRedirectAllowed(effectiveUrl);
       this.adoptSeedRedirect(effectiveUrl, depth);
       this.registerRedirectDestination(url, effectiveUrl);
 
@@ -1074,7 +1119,7 @@ export class SiteCrawler extends EventEmitter {
           return false;
         }
       } else if (this.crawlScope === 'subdomains') {
-        if (!urlObj.hostname.endsWith(this.rootDomain)) {
+        if (!this.isHostnameWithinDomain(urlObj.hostname, this.rootDomain)) {
           return false;
         }
       }

@@ -145,6 +145,7 @@ export class BrowserManager {
     this.geo = options.geo || null;
     this.blockCrossDomainRedirects = options.blockCrossDomainRedirects !== false;
     this.targetHostname = options.targetHostname || '';
+    this.isRedirectAllowed = typeof options.isRedirectAllowed === 'function' ? options.isRedirectAllowed : null;
     this.networkPolicy = options.networkPolicy || null;
   }
 
@@ -347,6 +348,7 @@ export class BrowserManager {
     }
 
     const context = await browser.newContext(contextOptions);
+    let page = null;
 
     // SEO extraction only needs the DOM. Avoid expensive media, font, analytics, and
     // anti-bot resources that can exhaust managed-hosting browser memory.
@@ -359,6 +361,19 @@ export class BrowserManager {
 
       try {
         if (isHeavyAsset || isNonEssentialThirdParty) {
+          await route.abort();
+        } else if (
+          this.blockCrossDomainRedirects &&
+          this.isRedirectAllowed &&
+          page &&
+          request.isNavigationRequest() &&
+          request.frame() === page.mainFrame() &&
+          !this.isRedirectAllowed(requestUrl)
+        ) {
+          // Route interception happens before Chromium follows a document
+          // redirect, unlike the old framenavigated listener which only
+          // reported it after the destination had already loaded.
+          console.warn(`[Domain Lock] Blocked cross-domain navigation to ${requestUrl}`);
           await route.abort();
         } else if (this.networkPolicy) {
           // This catches browser navigations, subresources and client-side
@@ -383,21 +398,7 @@ export class BrowserManager {
       }
     }, { spoofLocale: locale, spoofTimezone: timezoneId });
 
-    const page = await context.newPage();
-
-    // Prevent cross-domain client redirect if target hostname is set
-    if (this.blockCrossDomainRedirects && this.targetHostname) {
-      page.on('framenavigated', (frame) => {
-        if (frame === page.mainFrame()) {
-          try {
-            const currentHost = new URL(frame.url()).hostname;
-            if (currentHost && currentHost !== this.targetHostname && !currentHost.endsWith('.' + this.targetHostname)) {
-              console.warn(`[Geo Guard] Blocked cross-domain redirect to ${currentHost}, remaining on target ${this.targetHostname}`);
-            }
-          } catch (e) {}
-        }
-      });
-    }
+    page = await context.newPage();
 
     return { context, page };
   }
