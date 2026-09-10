@@ -260,7 +260,9 @@ export default function App() {
     ? { label: 'Ⅱ Pause crawl', action: 'pause' as const }
     : crawler.state === 'paused'
       ? { label: '▶ Resume crawl', action: 'resume' as const }
-      : { label: '▶ Execute crawl', action: 'start' as const };
+      : crawler.historyAudit
+        ? { label: '▶ Resume saved crawl', action: 'resumeHistory' as const }
+        : { label: '▶ Execute crawl', action: 'start' as const };
 
   function update<K extends keyof CrawlConfig>(key: K, value: CrawlConfig[K]) {
     setConfig(current => ({ ...current, [key]: value }));
@@ -289,7 +291,18 @@ export default function App() {
     try { await crawler.run('start', config); }
     finally { setCommandPending(null); }
   }
-  async function runCommand(action: 'pause' | 'resume' | 'stop' | 'reset') {
+  async function runCommand(action: 'pause' | 'resume' | 'stop' | 'reset' | 'resumeHistory') {
+    if (action === 'resumeHistory') {
+      if (!crawler.historyAudit?.crawlId) return;
+      setCommandPending('resume');
+      try {
+        await crawler.resumeHistory(crawler.historyAudit.crawlId);
+        setExplorerView('pages');
+      } finally {
+        setCommandPending(null);
+      }
+      return;
+    }
     setCommandPending(action);
     try { await crawler.run(action); }
     finally { setCommandPending(null); }

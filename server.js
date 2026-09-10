@@ -713,6 +713,13 @@ function createDashboardSession(req, principal) {
   return session;
 }
 
+function isSameDashboardAccount(session, principal) {
+  if (!session || !principal) return false;
+  if (session.ownerRole !== principal.role) return false;
+  if (principal.role === 'Administrator') return true;
+  return session.ownerUserId === principal.userId;
+}
+
 function requireDashboardSession(req, res, next) {
   pruneSessionRecords();
   const sessionId = getRequestedDashboardSessionId(req);
@@ -722,8 +729,11 @@ function requireDashboardSession(req, res, next) {
     return res.status(403).json({ error: 'This dashboard session has been revoked by an administrator.' });
   }
   const principal = req.dashboardPrincipal || getDashboardPrincipal(req, false);
-  if (!principal || existing.ownerRole !== principal.role || existing.ownerSessionId !== principal.id) {
+  if (!principal || !isSameDashboardAccount(existing, principal)) {
     return res.status(403).json({ error: 'This dashboard session belongs to a different signed-in account.' });
+  }
+  if (existing.ownerSessionId !== principal.id) {
+    existing.ownerSessionId = principal.id;
   }
   existing.lastSeenAt = Date.now();
   req.dashboardSession = existing;
@@ -808,22 +818,32 @@ function getCrawlCapacity() {
 // Dashboard IDs are created by the server, retained in one browser tab, and
 // bound to the signed-in account session. They are not accepted simply
 // because a client supplied a UUID.
-app.post('/api/crawler/session', requireDashboardUser, requireSameOrigin, (req, res) => {
+app.post('/api/crawler/session', requireDashboardUser, requireSameOrigin, async (req, res) => {
   pruneSessionRecords();
   const principal = req.dashboardPrincipal;
   const requestedId = getRequestedDashboardSessionId(req);
   if (requestedId) {
     const existing = dashboardSessions.get(requestedId);
     if (existing?.revokedAt) return res.status(403).json({ error: 'This dashboard session has been revoked by an administrator.' });
-    if (existing && (existing.ownerRole !== principal?.role || existing.ownerSessionId !== principal?.id)) {
+    if (existing && !isSameDashboardAccount(existing, principal)) {
       return res.status(403).json({ error: 'This dashboard session belongs to a different signed-in account.' });
     }
     if (existing) {
+      existing.ownerSessionId = principal.id;
       existing.lastSeenAt = Date.now();
       return res.json({ sessionId: existing.id, resumed: true });
     }
   }
   const created = createDashboardSession(req, principal);
+  for (const [, crawlerRecord] of crawlerSessions.entries()) {
+    if (crawlerRecord?.crawler?.isRunning && !crawlerRecord.crawler.isSuspended) {
+      const crawlOwner = await crawlStorage.getCrawlOwner(crawlerRecord.crawlId);
+      if (crawlOwner === getCrawlOwnerId(principal) || (principal?.role === 'Administrator' && !crawlOwner)) {
+        crawlerSessions.set(created.id, crawlerRecord);
+        break;
+      }
+    }
+  }
   auditSecurityEvent(req, 'dashboard.session.created', 'success', { accountType: principal?.role }, { adminSession: principal?.role === 'Administrator' ? principal.session : null, dashboardSession: created });
   return res.status(201).json({ sessionId: created.id, resumed: false });
 });
@@ -1317,7 +1337,8 @@ app.get('/api/crawler/links', (req, res) => {
 // Persistent crawl history. These routes remain available after a deployment or process restart.
 app.get('/api/crawler/history', async (req, res) => {
   try {
-    const crawls = await crawlStorage.listCrawls(req.query.limit, getCrawlOwnerId(req.dashboardPrincipal));
+    const isAdmin = req.dashboardPrincipal?.role === 'Administrator';
+    const crawls = await crawlStorage.listCrawls(req.query.limit, getCrawlOwnerId(req.dashboardPrincipal), isAdmin);
     res.json({ storage: crawlStorage.getStatus(), crawls });
   } catch (error) {
     res.status(500).json({ error: error.message, storage: crawlStorage.getStatus() });
@@ -1491,6 +1512,16 @@ app.post('/api/crawler/history/:crawlId/restore', async (req, res) => {
 app.post('/api/crawler/history/:crawlId/resume', async (req, res) => {
   const { sessionId, crawler: currentCrawler } = getSessionCrawler(req);
   if (currentCrawler?.isRunning) return res.status(409).json({ error: 'Pause or stop the current crawl before resuming saved history.' });
+
+  // Re-attach if crawl is already running in memory
+  for (const [, record] of crawlerSessions.entries()) {
+    if (record.crawlId === req.params.crawlId && record.crawler?.isRunning && !record.crawler.isSuspended) {
+      crawlerSessions.set(sessionId, record);
+      broadcastSSE(sessionId, 'resumed', {});
+      return res.json({ success: true, crawlId: record.crawlId, message: 'Reconnected to active crawl', reconnected: true });
+    }
+  }
+
   const capacity = getCrawlCapacity();
   if (capacity.activeCrawls >= capacity.maxConcurrentCrawls) {
     return res.status(429).json({ error: 'All crawl slots are occupied. Try again when another crawl finishes.', capacity });
@@ -1500,9 +1531,21 @@ app.post('/api/crawler/history/:crawlId/resume', async (req, res) => {
     if (!history) return res.status(404).json({ error: 'Saved crawl not found.' });
     if (!canAccessCrawl(req, history.crawl)) return res.status(403).json({ error: 'You do not have access to resume this crawl.' });
     if (history.crawl.status === 'completed') return res.status(409).json({ error: 'Completed crawls cannot be resumed.' });
-    if (!Array.isArray(history.crawl.queue) || history.crawl.queue.length === 0) {
+
+    let pendingQueue = Array.isArray(history.crawl.queue) ? history.crawl.queue : [];
+    if (pendingQueue.length === 0) {
+      const recovered = await crawlStorage.getUnvisitedFrontier(history.crawl.id, 500);
+      if (recovered.length > 0) {
+        pendingQueue = recovered;
+      }
+    }
+    if (pendingQueue.length === 0) {
       return res.status(409).json({ error: 'This crawl has no saved pending queue. Start a new crawl instead.' });
     }
+
+    const visitedList = Array.isArray(history.crawl.visited) && history.crawl.visited.length > 0
+      ? history.crawl.visited
+      : history.results.map(page => page.url);
 
     const config = history.crawl.config || {};
     const resumedCrawler = new SiteCrawler({
@@ -1524,8 +1567,8 @@ app.post('/api/crawler/history/:crawlId/resume', async (req, res) => {
       linkCheckConcurrency: LINK_CHECK_CONCURRENCY,
       linkCheckDeadlineMs: LINK_CHECK_DEADLINE_MS,
       isResumed: true,
-      resumedQueue: history.crawl.queue,
-      resumedVisited: history.crawl.visited,
+      resumedQueue: pendingQueue,
+      resumedVisited: visitedList,
       resumedResults: history.results,
       resumedAllLinks: history.results.flatMap(page => (page.links || []).map(link => ({
         ...link,

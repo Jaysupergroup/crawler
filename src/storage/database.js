@@ -400,10 +400,12 @@ export class CrawlStorage {
     }
   }
 
-  async listCrawls(limit = 25, ownerUserId = null) {
+  async listCrawls(limit = 25, ownerUserId = null, isAdmin = false) {
     if (!(await this.initialize())) return [];
-    const ownerFilter = ownerUserId ? 'WHERE owner_user_id = ?' : '';
-    const queryValues = ownerUserId
+    const ownerFilter = isAdmin
+      ? 'WHERE (owner_user_id = ? OR owner_user_id IS NULL)'
+      : ownerUserId ? 'WHERE owner_user_id = ?' : '';
+    const queryValues = (isAdmin || ownerUserId)
       ? [ownerUserId, Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100)]
       : [Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100)];
     const [rows] = await this.pool.execute(
@@ -427,6 +429,32 @@ export class CrawlStorage {
     if (!(await this.initialize()) || !this.pool) return null;
     const [rows] = await this.pool.execute('SELECT owner_user_id AS ownerUserId FROM crawl_runs WHERE id = ?', [id]);
     return rows[0]?.ownerUserId || null;
+  }
+
+  async getUnvisitedFrontier(crawlId, limit = 500) {
+    if (!(await this.initialize()) || !this.pool) return [];
+    try {
+      const [rows] = await this.pool.execute(
+        `SELECT DISTINCT l.target_url AS url, l.source_url AS sourceUrl, p.depth AS sourceDepth
+         FROM crawl_links l
+         LEFT JOIN crawl_pages p ON p.id = l.page_id
+         WHERE l.crawl_id = ?
+           AND l.is_valid_http = 1
+           AND l.target_url IS NOT NULL
+           AND l.target_url != ''
+           AND l.target_url NOT IN (SELECT url FROM crawl_pages WHERE crawl_id = ?)
+         LIMIT ?`,
+        [crawlId, crawlId, limit]
+      );
+      return rows.map(row => ({
+        url: row.url,
+        depth: (row.sourceDepth !== null && row.sourceDepth !== undefined ? row.sourceDepth : 0) + 1,
+        sourceUrl: row.sourceUrl || 'DISCOVERED'
+      }));
+    } catch (error) {
+      console.warn('Could not query unvisited frontier:', error.message);
+      return [];
+    }
   }
 
   async getCrawl(id) {

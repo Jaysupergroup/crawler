@@ -1185,6 +1185,7 @@ export class SiteCrawler extends EventEmitter {
     if (!this.isRunning || this.isCancelled || this.isSuspended) return;
     this.isCancelled = true;
     this.isPaused = false;
+    this.stoppedQueue = this.queue.map(item => ({ ...item }));
     this.queue = [];
     this.abortController?.abort();
     for (const pageContext of [...this.activePageContexts]) {
@@ -1209,8 +1210,9 @@ export class SiteCrawler extends EventEmitter {
   }
 
   getResumeState() {
+    const queueSource = this.queue.length > 0 ? this.queue : (this.stoppedQueue || []);
     return {
-      queue: this.queue.map(item => ({ url: item.url, depth: item.depth, sourceUrl: item.sourceUrl })),
+      queue: queueSource.map(item => ({ url: item.url, depth: item.depth, sourceUrl: item.sourceUrl })),
       visited: [...this.visited],
       redirectAliases: Object.fromEntries(this.redirectAliases),
       stats: { ...this.stats },
