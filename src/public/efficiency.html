@@ -85,73 +85,65 @@
 </head>
 <body>
   <main>
-    <div class="eyebrow">CrawlLoom / Efficiency</div>
-    <h1>Queue the crawl work.</h1>
-    <p class="lead">The highest-impact efficiency improvement is a central crawl job queue backed by a fixed worker pool.</p>
+    <div class="eyebrow">CrawlLoom / App review</div>
+    <h1>Efficiency, reliability, and security findings.</h1>
+    <p class="lead">A broader review of the crawler, dashboard, API, storage, and deployment model. The findings below describe observed behavior, its impact, and the work that would make the application more dependable at larger scale.</p>
 
     <section>
-      <h2>Why this matters</h2>
-      <p>At present, the server starts crawler work directly from the API process. Several crawls can compete for CPU, memory, and browser resources at the same time, which can make both crawling and the dashboard less responsive.</p>
+      <h2>How the app currently works</h2>
+      <p>The Express server authenticates users, creates dashboard sessions, starts <code>SiteCrawler</code> instances, streams progress over Server-Sent Events, coordinates optional MySQL persistence, and generates exports. The React dashboard consumes those APIs, while the engine handles browser navigation, direct HTTP extraction, SEO data, resources, and link checks.</p>
+      <p>This architecture is effective for a single server, but the server process currently owns too much state and too many long-running responsibilities. That is the central theme of this review.</p>
     </section>
 
     <section>
-      <h2>Recommended change</h2>
-      <ul>
-        <li>Create a queued job when a user starts a crawl.</li>
-        <li>Run only as many jobs as the server can support through a fixed worker pool.</li>
-        <li>Report clear <code>queued</code>, <code>running</code>, <code>completed</code>, and <code>failed</code> states.</li>
-        <li>Persist jobs so queued or completed work is not lost during a server restart.</li>
-        <li>Run crawl workers separately from the API process so the dashboard remains responsive.</li>
-      </ul>
+      <h2>Primary finding: crawl work is coupled to the API process</h2>
+      <p>When a crawl starts, <code>server.js</code> creates and runs the crawler directly while also serving authentication, dashboard requests, SSE connections, history, and exports. The server limits concurrency, but busy browser work still competes with ordinary API traffic for process resources.</p>
+      <p><strong>Impact:</strong> several large crawls can increase memory pressure and make status updates or exports feel slow. A restart also loses active in-memory crawler state.</p>
+      <p><strong>Direction:</strong> represent each crawl as a durable job, process jobs through a fixed worker pool, and expose explicit <code>queued</code>, <code>running</code>, <code>completed</code>, and <code>failed</code> states.</p>
     </section>
 
     <section>
-      <h2>Expected result</h2>
-      <p>The existing <code>MAX_CONCURRENT_CRAWLS</code> limit can become the worker-pool limit instead of rejecting work when all slots are occupied. This smooths out load, reduces memory spikes, and gives users predictable progress while keeping the API available.</p>
+      <h2>Finding: large audits cost memory in the browser</h2>
+      <p>The dashboard receives and retains complete page and link collections for the active audit. Pagination reduces the number of visible rows, but it does not reduce the memory required for the full audit.</p>
+      <p><strong>Impact:</strong> multi-thousand-page crawls can make rendering, filtering, issue analysis, and history restoration expensive.</p>
+      <p><strong>Direction:</strong> virtualize large tables, load history with cursors or pages, and move expensive SEO analysis into incremental processing or a Web Worker.</p>
     </section>
 
     <section>
-      <h2>Additional efficiency opportunities</h2>
-      <ul>
-        <li>Virtualize large pages and links tables so the browser renders only visible rows.</li>
-        <li>Use paginated or cursor-based loading for large crawl history and restored audits.</li>
-        <li>Reuse browser instances through a controlled browser pool instead of repeatedly starting Chromium.</li>
-        <li>Batch page database writes, such as 25 or 50 pages per insert, to reduce database round trips.</li>
-        <li>Generate Excel reports as background jobs so large exports do not hold an API request open.</li>
-        <li>Cache versioned public assets with long-lived cache headers.</li>
-        <li>Calculate SEO issues incrementally or in a Web Worker to keep the dashboard responsive.</li>
-      </ul>
+      <h2>Finding: persistence is page-by-page and failure visibility is limited</h2>
+      <p>Each crawled page is queued for a database write. Persistence errors are logged while the crawl continues, so the in-memory audit can finish even when the saved history is incomplete.</p>
+      <p><strong>Impact:</strong> users may believe a completed historical crawl is complete when some pages or links were never stored. Individual database operations also add avoidable round trips.</p>
+      <p><strong>Direction:</strong> batch page and link writes, track persistence status separately, and show a clear warning when saved history is incomplete.</p>
     </section>
 
     <section>
-      <h2>Suggested implementation order</h2>
+      <h2>Security and correctness findings</h2>
+      <p><strong>Subdomain matching:</strong> a suffix-only hostname check can treat an unrelated hostname as a subdomain. Require an exact host match or a hostname beginning with <code>.root-domain</code>.</p>
+      <p><strong>Redirect enforcement:</strong> cross-domain redirects are detected and logged, but the crawler must abort or reject the navigation when <code>blockCrossDomainRedirects</code> is enabled.</p>
+      <p><strong>Page limits:</strong> concurrent workers can all pass a limit check before the shared counter is updated. Reserve capacity when a URL enters processing so the configured maximum is exact.</p>
+      <p><strong>DNS consistency:</strong> hostname validation and the later browser or HTTP connection resolve independently. A controlled proxy or pinned connection path would reduce DNS-rebinding risk.</p>
+    </section>
+
+    <section>
+      <h2>Operational and maintenance findings</h2>
+      <p>Active crawls, dashboard sessions, and SSE clients are stored in process memory. This is acceptable for one instance, but it prevents reliable restart recovery and horizontal scaling. Shared session and job storage should come before multi-instance deployment.</p>
+      <p>The legacy dashboard remains available beside the supported React dashboard and is not maintained in lockstep. That creates duplicated behavior and security assumptions. It should be formally isolated, tested as a compatibility surface, or retired.</p>
+      <p>Large Excel exports should run as background jobs, browser instances should be reused through a controlled pool, and versioned public assets should use long-lived cache headers.</p>
+    </section>
+
+    <section>
+      <h2>Recommended implementation order</h2>
       <ol>
-        <li>Add the crawl job queue and worker pool.</li>
-        <li>Virtualize large result tables.</li>
-        <li>Add paginated history restoration and result loading.</li>
-        <li>Batch database persistence.</li>
-        <li>Move large exports into background jobs.</li>
+        <li>Fix hostname boundaries, redirect enforcement, and exact page-limit accounting.</li>
+        <li>Introduce the durable crawl queue and worker pool.</li>
+        <li>Batch persistence and report incomplete saved history.</li>
+        <li>Virtualize tables and paginate large history restores.</li>
+        <li>Move exports and heavy issue analysis out of the main request and render paths.</li>
+        <li>Choose a retirement or compatibility plan for the legacy dashboard.</li>
       </ol>
     </section>
 
-    <section>
-      <h2>Review findings to address</h2>
-      <ul>
-        <li>Use an exact host or dot-boundary check for subdomain crawling so unrelated domains cannot match the root domain.</li>
-        <li>Make cross-domain redirect blocking enforceable rather than only logging the redirect.</li>
-        <li>Reserve crawl-page capacity atomically so concurrent workers cannot exceed the configured page limit.</li>
-        <li>Surface persistence failures to users instead of allowing a crawl to appear complete with incomplete saved history.</li>
-        <li>Move active crawl jobs and sessions into shared storage before supporting multiple server instances or restart recovery.</li>
-        <li>Keep the legacy dashboard isolated or retire it so it cannot diverge from the supported React dashboard.</li>
-      </ul>
-    </section>
-
-    <section>
-      <h2>Priority for reliability</h2>
-      <p>Address network-boundary and redirect enforcement first, then make page limits exact. After that, improve persistence visibility and shared session storage. These changes protect crawl correctness and security before optimizing the user interface further.</p>
-    </section>
-
-    <footer>Recommendation recorded on September 10, 2026.</footer>
+    <footer>App review recorded on September 10, 2026.</footer>
   </main>
 </body>
 </html>
